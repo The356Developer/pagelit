@@ -1,3 +1,40 @@
+# Pagelit Release Notes — v1.3.4 (Build 10)
+
+---
+
+## 🇬🇧 English
+
+### What's New in v1.3.4
+* **100% Ad-Free & Offline**: Removed all banner ads and in-app purchase prompts for a clean, distraction-free, completely offline reading experience.
+* **PDF & Office Performance Boost**: Isolate background parsing for Word, Excel, and PowerPoint files, virtualized spreadsheet rendering, and smoother PDF scrolling and zooming.
+* **Smart PDF Table of Contents**: Three-tier automatic chapter detection (embedded bookmarks, heading heuristics, and TOC-page parsing) with instant chapter search and filtering.
+* **Upgraded PowerPoint Animations & Transitions**: Layout inheritance, accurate `<p:timing>` step-by-step animation playback, and directional slideshow transitions.
+* **Redesigned Horizontal Page Scrubber**: Responsive pill scrubber with live chapter subtitles and quick navigation across long documents.
+
+---
+
+## 🇫🇷 Français
+
+### Nouveautés de la version 1.3.4
+* **100 % sans publicité et hors ligne** : Suppression complète des bannières publicitaires et des achats intégrés pour une lecture épurée et entièrement hors ligne.
+* **Performances PDF et Office optimisées** : Analyse en arrière-plan pour Word, Excel et PowerPoint, rendu virtualisé des feuilles de calcul et défilement PDF plus fluide.
+* **Table des matières PDF intelligente** : Détection automatique des chapitres à 3 niveaux avec recherche et filtrage instantanés.
+* **Animations et transitions PowerPoint améliorées** : Héritage des dispositions, lecture fidèle des animations étape par étape et transitions directionnelles en mode diaporama.
+* **Barre de défilement horizontale repensée** : Curseur de navigation rapide affichant le chapitre actif en direct.
+
+---
+
+## 🇸🇦 العربية
+
+### الجديد في الإصدار 1.3.4
+* **خالي تماماً من الإعلانات ويعمل دون إنترنت**: إزالة جميع الإعلانات والشراء داخل التطبيق لتجربة قراءة هادئة وخاصة بالكامل.
+* **تحسين أداء PDF وملفات Office**: معالجة الملفات في الخلفية لملفات Word وExcel وPowerPoint مع تمرير وتكبير أكثر سلاسة.
+* **فهرس فصول PDF ذكي**: اكتشاف تلقائي للفصول على ثلاث مراحل مع البحث والتصفية السريعة.
+* **ترقية حركات وانتقالات PowerPoint**: وراثة التصاميم وتشغيل الحركات خطوة بخطوة مع انتقالات سلسة في وضع العرض.
+* **شريط تمرير أفقي مطور**: تنقل سريع ومريح بين الصفحات مع عرض اسم الفصل الحالي مباشرة.
+
+---
+
 # Pagelit Release Notes — v1.3.2 (Build 8)
 
 ---

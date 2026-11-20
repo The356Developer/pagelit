@@ -10,13 +10,15 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage"/>
-    <!-- Required for AdMob, sharing and online features in release builds -->
-    <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Required for Google Play Billing in-app purchases ("Remove ads") -->
-    <uses-permission android:name="com.android.vending.BILLING"/>
+    <!-- Pagelit is fully offline. The file_saver plugin merges INTERNET in;
+         strip it so the release build requests no network access. -->
+    <uses-permission
+        android:name="android.permission.INTERNET"
+        tools:node="remove"/>
     <application
         android:label="Pagelit"
         android:name="${applicationName}"
+        android:largeHeap="true"
         android:icon="@mipmap/ic_launcher">
         <activity
             android:name=".MainActivity"
@@ -70,10 +72,6 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
-        <!-- Google Mobile Ads App ID (Pagelit) -->
-        <meta-data
-            android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-6774620515484669~9581232659"/>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

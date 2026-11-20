@@ -6,6 +6,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pagelit/l10n/app_localizations.dart';
 import 'package:pagelit/screens/presentation_viewer_screen.dart';
+import 'package:pagelit/services/presentation_parser.dart';
+import 'package:pagelit/widgets/page_scrubber.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -145,5 +147,133 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.byType(PresentationSlideshowScreen), findsNothing);
+  });
+
+  testWidgets('PresentationSlideshowScreen supports step animations, replay, auto-play pause label, and PageScrubber', (tester) async {
+    const deck = PresentationDeck(
+      slides: [
+        PresentationSlide(
+          slideNumber: 1,
+          title: 'Intro Slide',
+          bulletPoints: ['Step One', 'Step Two'],
+          images: [],
+          transitionType: SlideTransitionType.pushLeft,
+          transitionDurationMs: 200,
+          elements: [
+            SlideShapeElement(
+              x: 0.1,
+              y: 0.1,
+              width: 0.8,
+              height: 0.2,
+              shapeId: '1',
+              paragraphs: [
+                SlideParagraph(spans: [SlideTextSpan(text: 'Intro Slide')]),
+              ],
+            ),
+            SlideShapeElement(
+              x: 0.1,
+              y: 0.4,
+              width: 0.8,
+              height: 0.2,
+              shapeId: '2',
+              paragraphs: [
+                SlideParagraph(spans: [SlideTextSpan(text: 'Animated Bullet')]),
+              ],
+            ),
+          ],
+          animations: [
+            SlideAnimationStep(
+              shapeId: '2',
+              effect: SlideAnimationEffect.flyIn,
+              direction: SlideAnimationDirection.fromBottom,
+              trigger: SlideAnimationTrigger.onClick,
+              clickGroup: 1,
+              durationMs: 250,
+            ),
+          ],
+        ),
+        PresentationSlide(
+          slideNumber: 2,
+          title: 'Second Slide',
+          bulletPoints: ['Done'],
+          images: [],
+          transitionType: SlideTransitionType.cover,
+          transitionDurationMs: 200,
+          elements: [
+            SlideShapeElement(
+              x: 0.1,
+              y: 0.1,
+              width: 0.8,
+              height: 0.2,
+              shapeId: '3',
+              paragraphs: [
+                SlideParagraph(spans: [SlideTextSpan(text: 'Second Slide')]),
+              ],
+            ),
+          ],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        home: PresentationSlideshowScreen(
+          deck: deck,
+          title: 'Demo Deck',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Initial state: Slide 1, Step 0/1, PageScrubber visible
+    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.text('Step 0/1'), findsOneWidget);
+    expect(find.byType(PageScrubber), findsOneWidget);
+
+    // Tap Next -> advances animation step to Step 1/1 without leaving slide 1
+    await tester.tap(find.byIcon(Icons.skip_next_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('1 / 2'), findsOneWidget);
+    expect(find.text('Step 1/1'), findsOneWidget);
+
+    // Tap Replay button -> still on slide 1 with animation replayed
+    await tester.tap(find.byIcon(Icons.replay_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('1 / 2'), findsOneWidget);
+
+    // Tap Next again -> moves to Slide 2
+    await tester.tap(find.byIcon(Icons.skip_next_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('2 / 2'), findsOneWidget);
+
+    // Toggle Auto-Play -> label turns from "Auto-play" to "Pause"
+    expect(find.text('Auto-play'), findsOneWidget);
+    await tester.tap(find.text('Auto-play'));
+    await tester.pump();
+    expect(find.text('Pause'), findsOneWidget);
+
+    // Pause back before teardown
+    await tester.tap(find.text('Pause'));
+    await tester.pump();
+    expect(find.text('Auto-play'), findsOneWidget);
+
+    // Use PageScrubber prev button to jump back to slide 1
+    await tester.tap(find.byKey(const ValueKey('page_scrubber_prev')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('1 / 2'), findsOneWidget);
+
+    // Advance past 3s control hide timer cleanly before dispose
+    await tester.pump(const Duration(seconds: 4));
   });
 }

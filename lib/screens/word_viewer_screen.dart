@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -153,6 +154,25 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
     }
 
     if (headings.isEmpty) {
+      for (int i = 0; i < _doc!.blocks.length; i++) {
+        final block = _doc!.blocks[i];
+        if (block is! WordParagraph || block.isBullet) continue;
+        final text = block.fullText.trim();
+        if (text.length < 2 || text.length > 90) continue;
+        if (text.endsWith(',') || text.endsWith(';')) continue;
+        final nonEmptySpans =
+            block.spans.where((s) => s.text.trim().isNotEmpty).toList();
+        if (nonEmptySpans.isEmpty) continue;
+        final allBold = nonEmptySpans.every((s) => s.bold);
+        final hasLargeFont =
+            nonEmptySpans.any((s) => (s.fontSize ?? 0) >= 15.5);
+        if (allBold || hasLargeFont) {
+          headings.add((index: i, text: text, level: 1));
+        }
+      }
+    }
+
+    if (headings.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(context.l10n.noTableOfContents)),
       );
@@ -196,8 +216,13 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
                     ),
                     onTap: () {
                       Navigator.of(context).pop();
+                      if (!_scrollController.hasClients) return;
+                      final maxExtent = _scrollController.position.maxScrollExtent;
+                      final fraction =
+                          h.index / math.max(1, _doc!.blocks.length - 1);
+                      final target = (fraction * maxExtent).clamp(0.0, maxExtent);
                       _scrollController.animateTo(
-                        (h.index * 68.0).clamp(0.0, _scrollController.position.maxScrollExtent),
+                        target,
                         duration: const Duration(milliseconds: 300),
                         curve: Curves.easeInOut,
                       );
@@ -485,6 +510,9 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
 
     final scheme = Theme.of(context).colorScheme;
 
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+    final imageCacheWidth = (dpr * 820).round().clamp(256, 1600);
+
     return ValueListenableBuilder<ComfortMode>(
       valueListenable: ReadingPrefs.comfortMode,
       builder: (context, comfort, _) {
@@ -534,7 +562,13 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
                     itemCount: _doc!.blocks.length,
                     itemBuilder: (context, index) {
                       final block = _doc!.blocks[index];
-                      return _buildBlock(block, textColor, scheme, comfort);
+                      return _buildBlock(
+                        block,
+                        textColor,
+                        scheme,
+                        comfort,
+                        imageCacheWidth,
+                      );
                     },
                   ),
                 ),
@@ -546,7 +580,13 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
     );
   }
 
-  Widget _buildBlock(WordBlock block, Color textColor, ColorScheme scheme, ComfortMode comfort) {
+  Widget _buildBlock(
+    WordBlock block,
+    Color textColor,
+    ColorScheme scheme,
+    ComfortMode comfort,
+    int imageCacheWidth,
+  ) {
     if (block is WordParagraph) {
       final align = block.alignment ?? TextAlign.start;
 
@@ -854,6 +894,8 @@ class _WordViewerScreenState extends State<WordViewerScreen> {
                 Image.memory(
                   block.bytes,
                   fit: BoxFit.contain,
+                  cacheWidth: imageCacheWidth,
+                  gaplessPlayback: true,
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
                 Container(

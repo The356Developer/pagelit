@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
@@ -10,6 +11,7 @@ import '../services/encoding_utils.dart';
 import '../services/gallery_saver.dart';
 import '../services/gemini_share_service.dart';
 import '../services/presentation_parser.dart';
+import '../widgets/page_scrubber.dart';
 
 enum PresentationViewMode {
   slides,
@@ -31,15 +33,16 @@ class PresentationViewerScreen extends StatefulWidget {
 }
 
 class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
-  final GlobalKey _slideCardKey = GlobalKey();
+  final Map<int, GlobalKey> _slideKeys = {};
   PresentationDeck? _deck;
   bool _isLoading = true;
   bool _isSavingToGallery = false;
   String? _error;
   int _currentSlideIndex = 0;
   final PageController _pageController = PageController();
-  final TransformationController _transformationController = TransformationController();
   bool _isZoomed = false;
+  int _resetZoomTrigger = 0;
+  int _replayTrigger = 0;
   bool _enableAnimations = true;
 
   PresentationViewMode _viewMode = PresentationViewMode.slides;
@@ -49,32 +52,34 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
   double _fontScale = 1.0;
   bool _fillContainer = true;
 
-  @override
-  void initState() {
-    super.initState();
-    _transformationController.addListener(_onTransformationChanged);
-    _loadFile();
-  }
+  GlobalKey _keyForSlide(int index) =>
+      _slideKeys.putIfAbsent(index, GlobalKey.new);
 
   @override
   void dispose() {
-    _transformationController.removeListener(_onTransformationChanged);
-    _transformationController.dispose();
     _pageController.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  void _onTransformationChanged() {
-    final scale = _transformationController.value.getMaxScaleOnAxis();
-    final isZoomed = scale > 1.08;
-    if (isZoomed != _isZoomed) {
-      setState(() => _isZoomed = isZoomed);
-    }
+  @override
+  void initState() {
+    super.initState();
+    _loadFile();
   }
 
   void _resetZoom() {
-    _transformationController.value = Matrix4.identity();
+    setState(() {
+      _isZoomed = false;
+      _resetZoomTrigger++;
+    });
+  }
+
+  void _replayAnimations() {
+    if (!_enableAnimations) {
+      setState(() => _enableAnimations = true);
+    }
+    setState(() => _replayTrigger++);
   }
 
   Future<void> _loadFile() async {
@@ -108,6 +113,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
           deck: _deck!,
           initialSlideIndex: _currentSlideIndex,
           title: widget.title,
+          enableAnimations: _enableAnimations,
         ),
       ),
     );
@@ -124,6 +130,8 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
 
   Future<void> _saveSlideToGallery() async {
     if (_deck == null || _deck!.slides.isEmpty || _isSavingToGallery) return;
+    final key = _slideKeys[_currentSlideIndex];
+    if (key == null) return;
     final l10n = context.l10n;
     setState(() => _isSavingToGallery = true);
     final cleanTitle = EncodingUtils.cleanDisplayName(widget.title);
@@ -131,7 +139,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
     try {
       await GallerySaver.saveBoundaryToGallery(
         context: context,
-        boundaryKey: _slideCardKey,
+        boundaryKey: key,
         baseName: 'Pagelit_${cleanTitle}_slide_$slideNum',
         successMessage: l10n.slideSaved(slideNum),
       );
@@ -142,11 +150,13 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
 
   Future<void> _askGemini() async {
     if (_deck == null || _deck!.slides.isEmpty) return;
+    final key = _slideKeys[_currentSlideIndex];
+    if (key == null) return;
     final cleanTitle = EncodingUtils.cleanDisplayName(widget.title);
     final slideNum = _currentSlideIndex + 1;
     await GeminiShareService.shareBoundaryToGemini(
       context: context,
-      boundaryKey: _slideCardKey,
+      boundaryKey: key,
       pageTitle: '$cleanTitle (Slide $slideNum)',
       customPrompt: 'Please summarize, explain the key points, and provide insights for this presentation slide.',
     );
@@ -268,6 +278,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
                                                 fontScale: 0.9,
                                                 searchQuery: '',
                                                 enableAnimations: false,
+                                                isThumbnail: true,
                                               ),
                                             ),
                                           )
@@ -480,6 +491,9 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
                 case 'slideshow':
                   _startSlideshow();
                   break;
+                case 'replay':
+                  _replayAnimations();
+                  break;
                 case 'mode_toggle':
                   setState(() {
                     _viewMode = _viewMode == PresentationViewMode.slides
@@ -525,6 +539,15 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
                   title: Text(l10n.playSlideshow),
                 ),
               ),
+              if (_viewMode == PresentationViewMode.slides)
+                PopupMenuItem(
+                  value: 'replay',
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.replay_rounded),
+                    title: Text(l10n.replayAnimation),
+                  ),
+                ),
               PopupMenuItem(
                 value: 'mode_toggle',
                 child: ListTile(
@@ -664,11 +687,15 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
 
     return PageView.builder(
       controller: _pageController,
+      physics: _isZoomed
+          ? const NeverScrollableScrollPhysics()
+          : const BouncingScrollPhysics(),
       itemCount: _deck!.slides.length,
       onPageChanged: (idx) {
         setState(() {
           _currentSlideIndex = idx;
-          _resetZoom();
+          _isZoomed = false;
+          _resetZoomTrigger++;
         });
       },
       itemBuilder: (context, index) {
@@ -676,148 +703,151 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
         final isCurrent = index == _currentSlideIndex;
 
         final cardWidget = _viewMode == PresentationViewMode.slides
-            ? _buildSlidePresentationCard(slide, l10n)
+            ? _buildSlidePresentationCard(slide, isCurrent: isCurrent, l10n: l10n)
             : _buildSlideOutlineCard(slide, l10n);
 
-        return isCurrent ? RepaintBoundary(key: _slideCardKey, child: cardWidget) : cardWidget;
+        return RepaintBoundary(key: _keyForSlide(index), child: cardWidget);
       },
     );
   }
 
-  /// Authentic visual presentation slide view with exact layout, staggered animations, and pinch-to-zoom.
-  Widget _buildSlidePresentationCard(PresentationSlide slide, AppLocalizations l10n) {
+  /// Authentic visual presentation slide view with exact layout, smooth animations, and pinch/double-tap zoom.
+  Widget _buildSlidePresentationCard(
+    PresentationSlide slide, {
+    required bool isCurrent,
+    required AppLocalizations l10n,
+  }) {
     final scheme = Theme.of(context).colorScheme;
     final totalSlides = _deck?.slides.length ?? 0;
     final aspectRatio = _deck?.aspectRatio ?? (16 / 9);
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            InteractiveViewer(
-              transformationController: _transformationController,
-              minScale: 1.0,
-              maxScale: 5.0,
-              clipBehavior: Clip.none,
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: slide.backgroundColor ?? Colors.white,
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: scheme.outlineVariant.withValues(alpha: 0.5),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.14),
-                          blurRadius: 20,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        _ZoomableSlidePage(
+          resetZoomTrigger: _resetZoomTrigger,
+          onZoomChanged: (zoomed) {
+            if (isCurrent && zoomed != _isZoomed) {
+              setState(() => _isZoomed = zoomed);
+            }
+          },
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: slide.backgroundColor ?? Colors.white,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: scheme.outlineVariant.withValues(alpha: 0.5),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.14),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
                     ),
-                    clipBehavior: Clip.antiAlias,
-                    child: AspectRatio(
-                      aspectRatio: aspectRatio,
-                      child: SlideCanvasView(
-                        key: ValueKey('slide_canvas_${slide.slideNumber}'),
-                        slide: slide,
-                        aspectRatio: aspectRatio,
-                        themeColors: _deck?.themeColors ?? const {},
-                        searchQuery: _searchQuery,
-                        fontScale: _fontScale,
-                        enableAnimations: _enableAnimations,
-                        onImageTap: _viewImage,
-                      ),
-                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: AspectRatio(
+                  aspectRatio: aspectRatio,
+                  child: SlideCanvasView(
+                    key: ValueKey('slide_canvas_${slide.slideNumber}'),
+                    slide: slide,
+                    aspectRatio: aspectRatio,
+                    themeColors: _deck?.themeColors ?? const {},
+                    searchQuery: _searchQuery,
+                    fontScale: _fontScale,
+                    enableAnimations: _enableAnimations && isCurrent,
+                    replayTrigger: isCurrent ? _replayTrigger : 0,
+                    onImageTap: _viewImage,
                   ),
                 ),
               ),
             ),
-            // Floating Reset Zoom Button when zoomed in
-            if (_isZoomed)
-              Positioned(
-                top: 16,
-                right: 20,
-                child: Material(
-                  elevation: 6,
-                  borderRadius: BorderRadius.circular(20),
-                  color: scheme.primaryContainer,
-                  child: InkWell(
-                    onTap: _resetZoom,
-                    borderRadius: BorderRadius.circular(20),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.zoom_out_map_rounded, size: 16, color: scheme.onPrimaryContainer),
-                          const SizedBox(width: 6),
-                          Text(
-                            l10n.resetZoom,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: scheme.onPrimaryContainer,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            // Bottom Slide Overlay Banner (Title + Slide Number)
-            Positioned(
-              bottom: 12,
-              left: 20,
-              right: 20,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: BoxDecoration(
-                  color: scheme.surfaceContainerHigh.withValues(alpha: 0.9),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        EncodingUtils.cleanDisplayName(slide.title),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        // Floating Reset Zoom Button when zoomed in
+        if (_isZoomed && isCurrent)
+          Positioned(
+            top: 16,
+            right: 20,
+            child: Material(
+              elevation: 6,
+              borderRadius: BorderRadius.circular(20),
+              color: scheme.primaryContainer,
+              child: InkWell(
+                onTap: _resetZoom,
+                borderRadius: BorderRadius.circular(20),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.zoom_out_map_rounded, size: 16, color: scheme.onPrimaryContainer),
+                      const SizedBox(width: 6),
+                      Text(
+                        l10n.resetZoom,
                         style: TextStyle(
                           fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: scheme.onSurface,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: scheme.primaryContainer,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '${slide.slideNumber} / $totalSlides',
-                        style: TextStyle(
-                          fontSize: 11,
                           fontWeight: FontWeight.bold,
                           color: scheme.onPrimaryContainer,
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-          ],
-        );
-      },
+          ),
+        // Bottom Slide Overlay Banner (Title + Slide Number)
+        Positioned(
+          bottom: 12,
+          left: 20,
+          right: 20,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHigh.withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: scheme.outlineVariant.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    EncodingUtils.cleanDisplayName(slide.title),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurface,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${slide.slideNumber} / $totalSlides',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: scheme.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1018,61 +1048,111 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
   }
 
   Widget _buildBottomControls(AppLocalizations l10n) {
-    final hasPrev = _currentSlideIndex > 0;
-    final hasNext = _deck != null && _currentSlideIndex < _deck!.slides.length - 1;
-
+    final total = _deck!.slides.length;
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton.filledTonal(
-              icon: Transform.flip(
-                flipX: Directionality.of(context) == TextDirection.rtl,
-                child: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-              ),
-              onPressed: hasPrev
-                  ? () => _pageController.previousPage(
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeInOut,
-                      )
-                  : null,
-            ),
-            Flexible(
-              child: TextButton.icon(
-                icon: const Icon(Icons.grid_view_rounded, size: 16),
-                label: Text(
-                  l10n.slideXOfY(_currentSlideIndex + 1, _deck!.slides.length),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                onPressed: _openSlideOverview,
-              ),
-            ),
-            IconButton.filledTonal(
-              icon: Transform.flip(
-                flipX: Directionality.of(context) == TextDirection.rtl,
-                child: const Icon(Icons.arrow_forward_ios_rounded, size: 18),
-              ),
-              onPressed: hasNext
-                  ? () => _pageController.nextPage(
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeInOut,
-                      )
-                  : null,
-            ),
-          ],
+        padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
+        child: PageScrubber(
+          currentPage: _currentSlideIndex + 1,
+          totalPages: total,
+          labelBuilder: (p) => l10n.slideXOfY(p, total),
+          subtitleBuilder: (p) =>
+              EncodingUtils.cleanDisplayName(_deck!.slides[p - 1].title),
+          onPageSelected: (p) {
+            final target = (p - 1).clamp(0, total - 1);
+            if (_pageController.hasClients) {
+              _pageController.jumpToPage(target);
+            }
+          },
         ),
       ),
     );
   }
 }
 
+/// Self-contained pinch-to-zoom & double-tap zoom container per slide.
+class _ZoomableSlidePage extends StatefulWidget {
+  const _ZoomableSlidePage({
+    required this.child,
+    required this.resetZoomTrigger,
+    required this.onZoomChanged,
+  });
+
+  final Widget child;
+  final int resetZoomTrigger;
+  final ValueChanged<bool> onZoomChanged;
+
+  @override
+  State<_ZoomableSlidePage> createState() => _ZoomableSlidePageState();
+}
+
+class _ZoomableSlidePageState extends State<_ZoomableSlidePage> {
+  final TransformationController _controller = TransformationController();
+  Offset _doubleTapPosition = Offset.zero;
+  bool _wasZoomed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_handleScaleChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _ZoomableSlidePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.resetZoomTrigger != widget.resetZoomTrigger && _wasZoomed) {
+      _controller.value = Matrix4.identity();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_handleScaleChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleScaleChanged() {
+    final zoomed = _controller.value.getMaxScaleOnAxis() > 1.08;
+    if (zoomed != _wasZoomed) {
+      _wasZoomed = zoomed;
+      widget.onZoomChanged(zoomed);
+    }
+  }
+
+  void _handleDoubleTap() {
+    if (_controller.value.getMaxScaleOnAxis() > 1.08) {
+      _controller.value = Matrix4.identity();
+    } else {
+      const double zoom = 2.2;
+      final dx = -_doubleTapPosition.dx * (zoom - 1);
+      final dy = -_doubleTapPosition.dy * (zoom - 1);
+      _controller.value = Matrix4.identity()
+        ..translateByDouble(dx, dy, 0.0, 1.0)
+        ..scaleByDouble(zoom, zoom, 1.0, 1.0);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onDoubleTapDown: (details) => _doubleTapPosition = details.localPosition,
+      onDoubleTap: _handleDoubleTap,
+      child: InteractiveViewer(
+        transformationController: _controller,
+        minScale: 1.0,
+        maxScale: 5.0,
+        clipBehavior: Clip.none,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
 /// Renders an authentic PowerPoint presentation slide canvas with full layout fidelity,
-/// positioning, typography, colors, borders, and optional staggered entrance animations.
-class SlideCanvasView extends StatelessWidget {
+/// single-controller animations (`<p:timing>` + foreground fallback), and image caching.
+class SlideCanvasView extends StatefulWidget {
   const SlideCanvasView({
     super.key,
     required this.slide,
@@ -1081,6 +1161,10 @@ class SlideCanvasView extends StatelessWidget {
     this.searchQuery = '',
     this.fontScale = 1.0,
     this.enableAnimations = true,
+    this.isThumbnail = false,
+    this.revealedStep,
+    this.replayTrigger = 0,
+    this.entranceDelay = Duration.zero,
     this.onImageTap,
   });
 
@@ -1090,42 +1174,181 @@ class SlideCanvasView extends StatelessWidget {
   final String searchQuery;
   final double fontScale;
   final bool enableAnimations;
+  final bool isThumbnail;
+  final int? revealedStep;
+  final int replayTrigger;
+  final Duration entranceDelay;
   final void Function(Uint8List bytes)? onImageTap;
 
   @override
+  State<SlideCanvasView> createState() => _SlideCanvasViewState();
+}
+
+class _SlideCanvasViewState extends State<SlideCanvasView>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _delayTimer;
+  bool _initialized = false;
+  late Map<String, List<SlideAnimationStep>> _stepsByShape;
+  late List<int> _foregroundIndexMap;
+  late int _foregroundCount;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 480),
+    );
+    _indexSlideData();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initialized) {
+      _initialized = true;
+      _startEntranceAnimation();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant SlideCanvasView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final slideChanged = oldWidget.slide.slideNumber != widget.slide.slideNumber ||
+        !identical(oldWidget.slide, widget.slide);
+    if (slideChanged) {
+      _indexSlideData();
+    }
+
+    final shouldRestart = slideChanged ||
+        oldWidget.revealedStep != widget.revealedStep ||
+        oldWidget.replayTrigger != widget.replayTrigger ||
+        oldWidget.enableAnimations != widget.enableAnimations ||
+        oldWidget.isThumbnail != widget.isThumbnail;
+
+    if (shouldRestart) {
+      _startEntranceAnimation();
+    }
+  }
+
+  @override
+  void dispose() {
+    _delayTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _indexSlideData() {
+    final map = <String, List<SlideAnimationStep>>{};
+    for (final step in widget.slide.animations) {
+      map.putIfAbsent(step.shapeId, () => []).add(step);
+    }
+    _stepsByShape = map;
+
+    int fg = 0;
+    _foregroundIndexMap = [
+      for (final el in widget.slide.elements)
+        el.isBackgroundDecor ? -1 : fg++,
+    ];
+    _foregroundCount = fg;
+  }
+
+  bool get _animationsActive {
+    final disableSystem = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    return widget.enableAnimations && !widget.isThumbnail && !disableSystem;
+  }
+
+  void _startEntranceAnimation() {
+    _delayTimer?.cancel();
+
+    if (!_animationsActive) {
+      _controller.value = 1.0;
+      return;
+    }
+
+    if (widget.slide.animations.isNotEmpty && widget.revealedStep != null) {
+      int maxMs = 420;
+      for (final step in widget.slide.animations) {
+        if (step.clickGroup == widget.revealedStep) {
+          final end = step.delayMs + step.durationMs;
+          if (end > maxMs) maxMs = end;
+        }
+      }
+      _controller.duration = Duration(milliseconds: maxMs.clamp(120, 2400));
+    } else {
+      _controller.duration = const Duration(milliseconds: 480);
+    }
+
+    if (widget.entranceDelay > Duration.zero) {
+      _controller.value = 0.0;
+      _delayTimer = Timer(widget.entranceDelay, () {
+        if (mounted) _controller.forward(from: 0.0);
+      });
+    } else {
+      _controller.forward(from: 0.0);
+    }
+  }
+
+  List<SlideAnimationStep>? _stepsForElement(SlideElement elem) {
+    if (elem.shapeId != null) {
+      final direct = _stepsByShape[elem.shapeId!];
+      if (direct != null && direct.isNotEmpty) return direct;
+    }
+    if (elem.groupShapeId != null) {
+      final grp = _stepsByShape[elem.groupShapeId!];
+      if (grp != null && grp.isNotEmpty) return grp;
+    }
+    return null;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+
     return LayoutBuilder(
       builder: (context, constraints) {
         final canvasW = constraints.maxWidth;
         final canvasH = constraints.maxHeight;
 
-        // Base unit for PowerPoint coordinate rendering (normalized to 960pt reference)
         const referenceWidth = 960.0;
-        final scale = (canvasW / referenceWidth) * fontScale;
+        final scale = (canvasW / referenceWidth) * widget.fontScale;
+        final bgCacheW = widget.isThumbnail
+            ? 360
+            : (canvasW * dpr).round().clamp(128, 1600);
 
         return Container(
           width: canvasW,
           height: canvasH,
-          color: slide.backgroundColor ?? Colors.white,
+          color: widget.slide.backgroundColor ?? Colors.white,
           child: Stack(
             clipBehavior: Clip.antiAlias,
             children: [
-              // Slide background image if available
-              if (slide.backgroundImage != null)
+              if (widget.slide.backgroundImage != null)
                 Positioned.fill(
                   child: Image.memory(
-                    slide.backgroundImage!,
+                    widget.slide.backgroundImage!,
                     fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
+                    cacheWidth: bgCacheW,
+                    gaplessPlayback: true,
+                    filterQuality: widget.isThumbnail
+                        ? FilterQuality.low
+                        : FilterQuality.medium,
                   ),
                 ),
 
-              // Visual slide elements rendered in z-order
-              for (int i = 0; i < slide.elements.length; i++)
-                _buildSlideElement(context, slide.elements[i], canvasW, canvasH, scale, i),
+              for (int i = 0; i < widget.slide.elements.length; i++)
+                _buildSlideElement(
+                  context,
+                  widget.slide.elements[i],
+                  canvasW,
+                  canvasH,
+                  scale,
+                  dpr,
+                  i,
+                ),
 
-              // Fallback if presentation has no visual elements parsed
-              if (slide.elements.isEmpty)
+              if (widget.slide.elements.isEmpty)
                 Positioned.fill(
                   child: Padding(
                     padding: EdgeInsets.all(24 * scale),
@@ -1133,15 +1356,15 @@ class SlideCanvasView extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          slide.title,
+                          widget.slide.title,
                           style: TextStyle(
                             fontSize: 24 * scale,
                             fontWeight: FontWeight.bold,
-                            color: themeColors['dk1'] ?? Colors.black87,
+                            color: widget.themeColors['dk1'] ?? Colors.black87,
                           ),
                         ),
                         SizedBox(height: 16 * scale),
-                        for (final point in slide.bulletPoints)
+                        for (final point in widget.slide.bulletPoints)
                           Padding(
                             padding: EdgeInsets.only(bottom: 8 * scale),
                             child: Row(
@@ -1174,6 +1397,7 @@ class SlideCanvasView extends StatelessWidget {
     double canvasW,
     double canvasH,
     double scale,
+    double dpr,
     int index,
   ) {
     final left = elem.x * canvasW;
@@ -1186,23 +1410,33 @@ class SlideCanvasView extends StatelessWidget {
     Widget innerContent;
 
     if (elem is SlidePictureElement) {
+      final cacheW = widget.isThumbnail
+          ? 360
+          : (width * dpr).round().clamp(128, 1600);
       innerContent = Transform.rotate(
         angle: elem.rotation * (pi / 180.0),
         alignment: Alignment.center,
         child: GestureDetector(
-          onTap: () => onImageTap?.call(elem.imageBytes),
+          onTap: () => widget.onImageTap?.call(elem.imageBytes),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(elem.borderRadius * scale),
             child: Image.memory(
               elem.imageBytes,
               fit: BoxFit.contain,
-              filterQuality: FilterQuality.medium,
+              cacheWidth: cacheW,
+              gaplessPlayback: true,
+              filterQuality:
+                  widget.isThumbnail ? FilterQuality.low : FilterQuality.medium,
               errorBuilder: (_, _, _) => const SizedBox.shrink(),
             ),
           ),
         ),
       );
     } else if (elem is SlideShapeElement) {
+      final padH = (width * 0.03).clamp(2.0, 10.0);
+      final padV = (height * 0.03).clamp(2.0, 8.0);
+      final innerW = max(1.0, width - padH * 2);
+
       innerContent = Transform.rotate(
         angle: elem.rotation * (pi / 180.0),
         alignment: Alignment.center,
@@ -1215,15 +1449,25 @@ class SlideCanvasView extends StatelessWidget {
                     width: (elem.borderWidth * scale).clamp(0.5, 8.0),
                   )
                 : null,
-            borderRadius: elem.isCircle ? null : BorderRadius.circular(elem.borderRadius * scale),
+            borderRadius: elem.isCircle
+                ? null
+                : BorderRadius.circular(elem.borderRadius * scale),
             shape: elem.isCircle ? BoxShape.circle : BoxShape.rectangle,
           ),
           alignment: elem.verticalAlignment,
-          padding: EdgeInsets.symmetric(
-            horizontal: (width * 0.03).clamp(2.0, 10.0),
-            vertical: (height * 0.03).clamp(2.0, 8.0),
-          ),
-          child: _buildShapeTextContent(elem, scale),
+          padding: EdgeInsets.symmetric(horizontal: padH, vertical: padV),
+          child: elem.paragraphs.isEmpty
+              ? const SizedBox.shrink()
+              : ClipRect(
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: elem.verticalAlignment,
+                    child: SizedBox(
+                      width: innerW,
+                      child: _buildShapeTextContent(elem, scale),
+                    ),
+                  ),
+                ),
         ),
       );
     } else if (elem is SlideTableElement) {
@@ -1232,43 +1476,199 @@ class SlideCanvasView extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final animatedChild = enableAnimations
-        ? TweenAnimationBuilder<double>(
-            key: ValueKey('anim_slide_${slide.slideNumber}_elem_$index'),
-            tween: Tween<double>(begin: 0.0, end: 1.0),
-            duration: Duration(milliseconds: 320 + min(index * 60, 400)),
-            curve: Interval(
-              min(index * 60, 400) / (320 + min(index * 60, 400)),
-              1.0,
-              curve: Curves.easeOutCubic,
+    Widget finalChild = innerContent;
+
+    if (widget.slide.animations.isNotEmpty && widget.revealedStep != null) {
+      finalChild = _wrapWithTimingStep(
+        elem: elem,
+        child: innerContent,
+        width: width,
+        height: height,
+        scale: scale,
+      );
+    } else if (_animationsActive && !elem.isBackgroundDecor) {
+      final fgIdx = _foregroundIndexMap[index];
+      final totalFg = max(1, _foregroundCount);
+      final stepWindow = totalFg > 1 ? 0.45 / max(1, totalFg - 1) : 0.0;
+      final start = (fgIdx * min<double>(0.08, stepWindow)).clamp(0.0, 0.55).toDouble();
+      final end = (start + 0.45).clamp(0.15, 1.0).toDouble();
+
+      finalChild = AnimatedBuilder(
+        animation: _controller,
+        child: innerContent,
+        builder: (context, child) {
+          final t = Curves.easeOutCubic.transform(
+            Interval(start, end).transform(_controller.value),
+          );
+          return Opacity(
+            opacity: t.clamp(0.0, 1.0),
+            child: Transform.translate(
+              offset: Offset(0, 8 * (1.0 - t) * scale),
+              child: child,
             ),
-            builder: (context, val, child) {
-              return Opacity(
-                opacity: val.clamp(0.0, 1.0),
-                child: Transform.translate(
-                  offset: Offset(0, 12 * (1.0 - val) * scale),
-                  child: child,
-                ),
-              );
-            },
-            child: innerContent,
-          )
-        : innerContent;
+          );
+        },
+      );
+    }
 
     return Positioned(
       left: left,
       top: top,
       width: width,
       height: height,
-      child: animatedChild,
+      child: finalChild,
     );
+  }
+
+  Widget _wrapWithTimingStep({
+    required SlideElement elem,
+    required Widget child,
+    required double width,
+    required double height,
+    required double scale,
+  }) {
+    final steps = _stepsForElement(elem);
+    if (steps == null || steps.isEmpty) return child;
+
+    final currentStep = widget.revealedStep!;
+    final entrance = steps.where((s) => !s.isEmphasis).firstOrNull;
+    final emphasis = steps
+        .where((s) => s.isEmphasis && s.clickGroup == currentStep)
+        .firstOrNull;
+
+    if (entrance != null) {
+      if (entrance.clickGroup > currentStep) {
+        return IgnorePointer(
+          child: Opacity(opacity: 0.0, child: child),
+        );
+      }
+      if (entrance.clickGroup == currentStep) {
+        if (!_animationsActive) return child;
+        final totalMs = max(120, _controller.duration?.inMilliseconds ?? 420);
+        final start = (entrance.delayMs / totalMs).clamp(0.0, 0.85);
+        final end =
+            ((entrance.delayMs + entrance.durationMs) / totalMs).clamp(start + 0.05, 1.0);
+
+        return AnimatedBuilder(
+          animation: _controller,
+          child: child,
+          builder: (context, builtChild) {
+            final rawT = Interval(start, end).transform(_controller.value);
+            final t = Curves.easeOutCubic.transform(rawT).clamp(0.0, 1.0);
+            return _applyAnimationEffect(
+              child: builtChild!,
+              effect: entrance.effect,
+              direction: entrance.direction,
+              t: t,
+              width: width,
+              height: height,
+              scale: scale,
+            );
+          },
+        );
+      }
+    }
+
+    if (emphasis != null && _animationsActive) {
+      return AnimatedBuilder(
+        animation: _controller,
+        child: child,
+        builder: (context, builtChild) {
+          final pulse = sin(_controller.value * pi) * 0.07;
+          return Transform.scale(
+            scale: 1.0 + pulse,
+            alignment: Alignment.center,
+            child: builtChild,
+          );
+        },
+      );
+    }
+
+    return child;
+  }
+
+  Widget _applyAnimationEffect({
+    required Widget child,
+    required SlideAnimationEffect effect,
+    required SlideAnimationDirection direction,
+    required double t,
+    required double width,
+    required double height,
+    required double scale,
+  }) {
+    switch (effect) {
+      case SlideAnimationEffect.appear:
+        return Opacity(opacity: t > 0.05 ? 1.0 : 0.0, child: child);
+      case SlideAnimationEffect.fade:
+        return Opacity(opacity: t, child: child);
+      case SlideAnimationEffect.flyIn:
+      case SlideAnimationEffect.floatIn:
+        final dist = effect == SlideAnimationEffect.floatIn
+            ? 22.0 * scale
+            : 56.0 * scale;
+        final offset = switch (direction) {
+          SlideAnimationDirection.fromLeft => Offset(-dist * (1.0 - t), 0),
+          SlideAnimationDirection.fromRight => Offset(dist * (1.0 - t), 0),
+          SlideAnimationDirection.fromTop => Offset(0, -dist * (1.0 - t)),
+          SlideAnimationDirection.fromBottom ||
+          SlideAnimationDirection.center =>
+            Offset(0, dist * (1.0 - t)),
+        };
+        return Opacity(
+          opacity: (t * 1.4).clamp(0.0, 1.0),
+          child: Transform.translate(offset: offset, child: child),
+        );
+      case SlideAnimationEffect.wipe:
+        final AlignmentGeometry align = switch (direction) {
+          SlideAnimationDirection.fromRight => Alignment.centerRight,
+          SlideAnimationDirection.fromTop => Alignment.topCenter,
+          SlideAnimationDirection.fromBottom => Alignment.bottomCenter,
+          _ => Alignment.centerLeft,
+        };
+        final isVertical = direction == SlideAnimationDirection.fromTop ||
+            direction == SlideAnimationDirection.fromBottom;
+        return ClipRect(
+          child: Align(
+            alignment: align,
+            widthFactor: isVertical ? 1.0 : max(0.001, t),
+            heightFactor: isVertical ? max(0.001, t) : 1.0,
+            child: child,
+          ),
+        );
+      case SlideAnimationEffect.split:
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.center,
+            widthFactor: max(0.001, t),
+            child: Opacity(opacity: (t * 1.2).clamp(0.0, 1.0), child: child),
+          ),
+        );
+      case SlideAnimationEffect.zoom:
+        return Opacity(
+          opacity: t,
+          child: Transform.scale(
+            scale: 0.72 + (0.28 * t),
+            alignment: Alignment.center,
+            child: child,
+          ),
+        );
+      case SlideAnimationEffect.emphasis:
+        final pulse = sin(t * pi) * 0.07;
+        return Transform.scale(
+          scale: 1.0 + pulse,
+          alignment: Alignment.center,
+          child: child,
+        );
+    }
   }
 
   Widget _buildShapeTextContent(SlideShapeElement elem, double scale) {
     if (elem.paragraphs.isEmpty) return const SizedBox.shrink();
 
-    final isDarkFill = elem.fillColor != null && elem.fillColor!.computeLuminance() < 0.4;
-    final defaultColor = isDarkFill ? Colors.white : (themeColors['dk1'] ?? Colors.black87);
+    final isDarkFill =
+        elem.fillColor != null && elem.fillColor!.computeLuminance() < 0.4;
+    final defaultColor =
+        isDarkFill ? Colors.white : (widget.themeColors['dk1'] ?? Colors.black87);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1327,12 +1727,14 @@ class SlideCanvasView extends StatelessWidget {
       height: 1.25,
     );
 
-    if (searchQuery.isEmpty || !EncodingUtils.searchMatches(span.text, searchQuery)) {
+    if (widget.searchQuery.isEmpty ||
+        !EncodingUtils.searchMatches(span.text, widget.searchQuery)) {
       return TextSpan(text: span.text, style: baseStyle);
     }
 
     // Highlighting matching search terms
-    final cleanQuery = EncodingUtils.removeDiacritics(searchQuery.toLowerCase());
+    final cleanQuery =
+        EncodingUtils.removeDiacritics(widget.searchQuery.toLowerCase());
     final cleanText = EncodingUtils.removeDiacritics(span.text.toLowerCase());
     final childSpans = <TextSpan>[];
     int start = 0;
@@ -1392,7 +1794,8 @@ class SlideCanvasView extends StatelessWidget {
                                 _buildTextSpan(
                                   span,
                                   scale,
-                                  cell.fillColor != null && cell.fillColor!.computeLuminance() < 0.4
+                                  cell.fillColor != null &&
+                                          cell.fillColor!.computeLuminance() < 0.4
                                       ? Colors.white
                                       : Colors.black87,
                                 ),
@@ -1409,43 +1812,68 @@ class SlideCanvasView extends StatelessWidget {
   }
 }
 
-/// Fullscreen immersive Slideshow Screen (Diaporama) with slide transitions and playback timer.
+/// Fullscreen immersive Slideshow Screen (Diaporama) with directional slide transitions,
+/// step-by-step `<p:timing>` entrance animations, replay/rotate controls, and playback progress bar.
 class PresentationSlideshowScreen extends StatefulWidget {
   const PresentationSlideshowScreen({
     super.key,
     required this.deck,
     this.initialSlideIndex = 0,
     required this.title,
+    this.enableAnimations = true,
   });
 
   final PresentationDeck deck;
   final int initialSlideIndex;
   final String title;
+  final bool enableAnimations;
 
   @override
-  State<PresentationSlideshowScreen> createState() => _PresentationSlideshowScreenState();
+  State<PresentationSlideshowScreen> createState() =>
+      _PresentationSlideshowScreenState();
 }
 
-class _PresentationSlideshowScreenState extends State<PresentationSlideshowScreen> {
+class _PresentationSlideshowScreenState
+    extends State<PresentationSlideshowScreen>
+    with SingleTickerProviderStateMixin {
+  static const int _autoPlaySlideSeconds = 4;
+  static const int _autoPlayStepMs = 2200;
+
   late int _currentIndex;
+  int _revealedStep = 0;
+  int _replayTrigger = 0;
+  bool _navigatingForward = true;
+  bool _wasSlideChange = false;
   bool _showControls = true;
   bool _isAutoPlaying = false;
-  Timer? _autoPlayTimer;
+  bool _isLandscape = false;
   Timer? _hideControlsTimer;
-  final int _autoPlayIntervalSeconds = 4;
+  late final AnimationController _autoPlayProgressController;
+
+  PresentationSlide get _currentSlide => widget.deck.slides[_currentIndex];
 
   @override
   void initState() {
     super.initState();
-    _currentIndex = widget.initialSlideIndex.clamp(0, widget.deck.slides.length - 1);
+    _currentIndex =
+        widget.initialSlideIndex.clamp(0, widget.deck.slides.length - 1);
+    _autoPlayProgressController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: _autoPlaySlideSeconds),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed && _isAutoPlaying && mounted) {
+          _advanceStepOrNextSlide(fromAutoPlay: true);
+        }
+      });
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _scheduleHideControls();
   }
 
   @override
   void dispose() {
-    _autoPlayTimer?.cancel();
     _hideControlsTimer?.cancel();
+    _autoPlayProgressController.dispose();
+    SystemChrome.setPreferredOrientations([]);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     super.dispose();
   }
@@ -1462,18 +1890,106 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
     if (_showControls) _scheduleHideControls();
   }
 
-  void _nextSlide() {
-    if (_currentIndex < widget.deck.slides.length - 1) {
-      setState(() => _currentIndex++);
-    } else if (_isAutoPlaying) {
-      setState(() => _currentIndex = 0); // loop in autoplay
+  void _restartAutoPlayCountdown() {
+    if (!_isAutoPlaying) return;
+    final hasMoreSteps =
+        widget.enableAnimations &&
+        _revealedStep < _currentSlide.animationClickStepCount;
+    _autoPlayProgressController.duration = Duration(
+      milliseconds: hasMoreSteps ? _autoPlayStepMs : _autoPlaySlideSeconds * 1000,
+    );
+    _autoPlayProgressController.forward(from: 0.0);
+  }
+
+  void _advanceStepOrNextSlide({bool fromAutoPlay = false}) {
+    final totalSteps =
+        widget.enableAnimations ? _currentSlide.animationClickStepCount : 0;
+    if (_revealedStep < totalSteps) {
+      setState(() {
+        _wasSlideChange = false;
+        _revealedStep++;
+      });
+      _restartAutoPlayCountdown();
+    } else if (_currentIndex < widget.deck.slides.length - 1) {
+      setState(() {
+        _navigatingForward = true;
+        _wasSlideChange = true;
+        _currentIndex++;
+        _revealedStep = 0;
+      });
+      _restartAutoPlayCountdown();
+    } else if (fromAutoPlay && _isAutoPlaying) {
+      setState(() {
+        _navigatingForward = true;
+        _wasSlideChange = true;
+        _currentIndex = 0;
+        _revealedStep = 0;
+      });
+      _restartAutoPlayCountdown();
+    }
+    if (!fromAutoPlay && _showControls) _scheduleHideControls();
+  }
+
+  void _stepBackOrPrevSlide() {
+    if (_revealedStep > 0) {
+      setState(() {
+        _wasSlideChange = false;
+        _revealedStep--;
+      });
+      _restartAutoPlayCountdown();
+    } else if (_currentIndex > 0) {
+      final prevIdx = _currentIndex - 1;
+      final prevSteps = widget.enableAnimations
+          ? widget.deck.slides[prevIdx].animationClickStepCount
+          : 0;
+      setState(() {
+        _navigatingForward = false;
+        _wasSlideChange = true;
+        _currentIndex = prevIdx;
+        _revealedStep = prevSteps;
+      });
+      _restartAutoPlayCountdown();
     }
     if (_showControls) _scheduleHideControls();
   }
 
-  void _prevSlide() {
-    if (_currentIndex > 0) {
-      setState(() => _currentIndex--);
+  void _jumpToSlideIndex(int targetIndex) {
+    final clamped = targetIndex.clamp(0, widget.deck.slides.length - 1);
+    if (clamped == _currentIndex) return;
+    setState(() {
+      _navigatingForward = clamped > _currentIndex;
+      _wasSlideChange = true;
+      _currentIndex = clamped;
+      _revealedStep = 0;
+    });
+    _restartAutoPlayCountdown();
+    if (_showControls) _scheduleHideControls();
+  }
+
+  void _replayCurrentSlide() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _wasSlideChange = false;
+      _revealedStep = _currentSlide.animationClickStepCount > 0 && _revealedStep > 0
+          ? 1
+          : 0;
+      _replayTrigger++;
+    });
+    _restartAutoPlayCountdown();
+    if (_showControls) _scheduleHideControls();
+  }
+
+  Future<void> _toggleLandscape() async {
+    HapticFeedback.selectionClick();
+    final nextLandscape = !_isLandscape;
+    setState(() => _isLandscape = nextLandscape);
+    if (nextLandscape) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      await SystemChrome.setPreferredOrientations([]);
     }
     if (_showControls) _scheduleHideControls();
   }
@@ -1482,62 +1998,129 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
     setState(() {
       _isAutoPlaying = !_isAutoPlaying;
       if (_isAutoPlaying) {
-        _autoPlayTimer?.cancel();
-        _autoPlayTimer = Timer.periodic(
-          Duration(seconds: _autoPlayIntervalSeconds),
-          (_) => _nextSlide(),
-        );
+        _restartAutoPlayCountdown();
       } else {
-        _autoPlayTimer?.cancel();
+        _autoPlayProgressController.stop();
+        _autoPlayProgressController.value = 0.0;
       }
     });
     if (_showControls) _scheduleHideControls();
   }
 
-  Widget _buildSlideTransition(Widget child, Animation<double> animation, PresentationSlide slide) {
-    switch (slide.transitionType) {
+  Widget _buildSlideTransition(
+    Widget child,
+    Animation<double> animation,
+    PresentationSlide targetSlide,
+  ) {
+    final isIncoming = child.key == ValueKey('slideshow_slide_$_currentIndex');
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeInOutCubic,
+    );
+
+    Offset directionalOffset(Offset forwardBegin) {
+      final begin = _navigatingForward ? forwardBegin : -forwardBegin;
+      final effectiveBegin = isIncoming ? begin : -begin;
+      return effectiveBegin;
+    }
+
+    switch (targetSlide.transitionType) {
       case SlideTransitionType.pushLeft:
         return SlideTransition(
           position: Tween<Offset>(
-            begin: const Offset(1.0, 0.0),
+            begin: directionalOffset(const Offset(1.0, 0.0)),
             end: Offset.zero,
-          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeInOut)),
+          ).animate(curved),
           child: child,
         );
       case SlideTransitionType.pushRight:
         return SlideTransition(
           position: Tween<Offset>(
-            begin: const Offset(-1.0, 0.0),
+            begin: directionalOffset(const Offset(-1.0, 0.0)),
             end: Offset.zero,
-          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeInOut)),
+          ).animate(curved),
           child: child,
         );
       case SlideTransitionType.pushUp:
         return SlideTransition(
           position: Tween<Offset>(
-            begin: const Offset(0.0, 1.0),
+            begin: directionalOffset(const Offset(0.0, 1.0)),
             end: Offset.zero,
-          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeInOut)),
+          ).animate(curved),
           child: child,
         );
       case SlideTransitionType.pushDown:
         return SlideTransition(
           position: Tween<Offset>(
-            begin: const Offset(0.0, -1.0),
+            begin: directionalOffset(const Offset(0.0, -1.0)),
             end: Offset.zero,
-          ).animate(CurvedAnimation(parent: animation, curve: Curves.easeInOut)),
+          ).animate(curved),
           child: child,
+        );
+      case SlideTransitionType.cover:
+        if (!isIncoming) return child;
+        final coverBegin = _navigatingForward
+            ? const Offset(1.0, 0.0)
+            : const Offset(-1.0, 0.0);
+        return SlideTransition(
+          position: Tween<Offset>(begin: coverBegin, end: Offset.zero)
+              .animate(curved),
+          child: child,
+        );
+      case SlideTransitionType.uncover:
+        if (isIncoming) return child;
+        final uncoverExit = _navigatingForward
+            ? const Offset(-1.0, 0.0)
+            : const Offset(1.0, 0.0);
+        return SlideTransition(
+          position: Tween<Offset>(begin: uncoverExit, end: Offset.zero)
+              .animate(curved),
+          child: child,
+        );
+      case SlideTransitionType.wipe:
+        if (!isIncoming) return child;
+        return AnimatedBuilder(
+          animation: curved,
+          child: child,
+          builder: (context, builtChild) {
+            return ClipRect(
+              child: Align(
+                alignment: _navigatingForward
+                    ? Alignment.centerLeft
+                    : Alignment.centerRight,
+                widthFactor: max(0.001, curved.value),
+                child: builtChild,
+              ),
+            );
+          },
+        );
+      case SlideTransitionType.split:
+        if (!isIncoming) return child;
+        return AnimatedBuilder(
+          animation: curved,
+          child: child,
+          builder: (context, builtChild) {
+            return ClipRect(
+              child: Align(
+                alignment: Alignment.center,
+                widthFactor: max(0.001, curved.value),
+                child: builtChild,
+              ),
+            );
+          },
         );
       case SlideTransitionType.zoom:
         return ScaleTransition(
-          scale: Tween<double>(begin: 0.9, end: 1.0).animate(
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-          ),
-          child: FadeTransition(opacity: animation, child: child),
+          scale: Tween<double>(
+            begin: isIncoming ? 0.88 : 1.05,
+            end: 1.0,
+          ).animate(curved),
+          child: FadeTransition(opacity: curved, child: child),
         );
+      case SlideTransitionType.cut:
+        return child;
       case SlideTransitionType.fade:
-      case SlideTransitionType.wipe:
-      default:
+      case SlideTransitionType.none:
         return FadeTransition(opacity: animation, child: child);
     }
   }
@@ -1545,8 +2128,25 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    final slide = widget.deck.slides[_currentIndex];
+    final slide = _currentSlide;
     final totalSlides = widget.deck.slides.length;
+    final totalSteps =
+        widget.enableAnimations ? slide.animationClickStepCount : 0;
+    final transitionDuration = slide.transitionType == SlideTransitionType.cut
+        ? Duration.zero
+        : slide.transitionType == SlideTransitionType.none
+            ? const Duration(milliseconds: 180)
+            : Duration(milliseconds: slide.transitionDurationMs);
+    final entranceDelay = _wasSlideChange && transitionDuration.inMilliseconds > 0
+        ? Duration(
+            milliseconds: (transitionDuration.inMilliseconds * 0.4).round(),
+          )
+        : Duration.zero;
+    final isRtl = Directionality.of(context) == TextDirection.rtl;
+
+    final canStepBack = _currentIndex > 0 || _revealedStep > 0;
+    final canStepNext =
+        _currentIndex < totalSlides - 1 || _revealedStep < totalSteps;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -1554,32 +2154,81 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
         behavior: HitTestBehavior.opaque,
         onTap: _toggleControls,
         onHorizontalDragEnd: (details) {
-          if (details.primaryVelocity != null) {
-            if (details.primaryVelocity! < -200) {
-              _nextSlide();
-            } else if (details.primaryVelocity! > 200) {
-              _prevSlide();
-            }
+          final v = details.primaryVelocity;
+          if (v == null) return;
+          if (v < -200) {
+            _jumpToSlideIndex(_currentIndex + 1);
+          } else if (v > 200) {
+            _jumpToSlideIndex(_currentIndex - 1);
           }
         },
         child: Stack(
           alignment: Alignment.center,
           children: [
-            // Slide Canvas with active transition
+            // Slide Canvas clipped strictly to aspect ratio
             Center(
-              child: AnimatedSwitcher(
-                duration: Duration(milliseconds: slide.transitionDurationMs),
-                transitionBuilder: (child, animation) => _buildSlideTransition(child, animation, slide),
-                child: KeyedSubtree(
-                  key: ValueKey('slideshow_slide_$_currentIndex'),
-                  child: AspectRatio(
-                    aspectRatio: widget.deck.aspectRatio,
-                    child: SlideCanvasView(
-                      slide: slide,
-                      aspectRatio: widget.deck.aspectRatio,
-                      themeColors: widget.deck.themeColors,
-                      enableAnimations: true,
-                    ),
+              child: AspectRatio(
+                aspectRatio: widget.deck.aspectRatio,
+                child: ClipRect(
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      AnimatedSwitcher(
+                        duration: transitionDuration,
+                        layoutBuilder: (currentChild, previousChildren) {
+                          if (slide.transitionType ==
+                              SlideTransitionType.uncover) {
+                            return Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                ?currentChild,
+                                ...previousChildren,
+                              ],
+                            );
+                          }
+                          return Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              ...previousChildren,
+                              ?currentChild,
+                            ],
+                          );
+                        },
+                        transitionBuilder: (child, animation) =>
+                            _buildSlideTransition(child, animation, slide),
+                        child: KeyedSubtree(
+                          key: ValueKey('slideshow_slide_$_currentIndex'),
+                          child: SlideCanvasView(
+                            slide: slide,
+                            aspectRatio: widget.deck.aspectRatio,
+                            themeColors: widget.deck.themeColors,
+                            enableAnimations: widget.enableAnimations,
+                            revealedStep: _revealedStep,
+                            replayTrigger: _replayTrigger,
+                            entranceDelay: entranceDelay,
+                          ),
+                        ),
+                      ),
+                      if (_isAutoPlaying)
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 0,
+                          height: 3,
+                          child: AnimatedBuilder(
+                            animation: _autoPlayProgressController,
+                            builder: (context, _) => LinearProgressIndicator(
+                              value: _autoPlayProgressController.value,
+                              backgroundColor:
+                                  Colors.white.withValues(alpha: 0.2),
+                              valueColor: const AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
+                              minHeight: 3,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -1593,7 +2242,7 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
               width: 60,
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
-                onTap: _prevSlide,
+                onTap: _stepBackOrPrevSlide,
                 child: const SizedBox.expand(),
               ),
             ),
@@ -1604,100 +2253,221 @@ class _PresentationSlideshowScreenState extends State<PresentationSlideshowScree
               width: 60,
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
-                onTap: _nextSlide,
+                onTap: _advanceStepOrNextSlide,
                 child: const SizedBox.expand(),
               ),
             ),
 
             // Top Overlay Bar
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 250),
-              top: _showControls ? 0 : -90,
+            Positioned(
+              top: 0,
               left: 0,
               right: 0,
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(16, 36, 16, 12),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.8),
-                      Colors.transparent,
-                    ],
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    IconButton(
-                      tooltip: l10n.exitSlideshow,
-                      icon: const Icon(Icons.arrow_back_rounded, color: Colors.white),
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        EncodingUtils.cleanDisplayName(widget.title),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
-                      ),
-                    ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: IgnorePointer(
+                ignoring: !_showControls,
+                child: AnimatedSlide(
+                  duration: const Duration(milliseconds: 220),
+                  offset: _showControls ? Offset.zero : const Offset(0, -1),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity: _showControls ? 1.0 : 0.0,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(12, 36, 12, 12),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(16),
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.black.withValues(alpha: 0.82),
+                            Colors.transparent,
+                          ],
+                        ),
                       ),
-                      child: Text(
-                        '${_currentIndex + 1} / $totalSlides',
-                        style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: l10n.exitSlideshow,
+                            icon: const Icon(
+                              Icons.arrow_back_rounded,
+                              color: Colors.white,
+                            ),
+                            onPressed: () => Navigator.of(context).pop(),
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              EncodingUtils.cleanDisplayName(widget.title),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          if (totalSteps > 0)
+                            Container(
+                              margin: const EdgeInsetsDirectional.only(end: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.16),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                              child: Text(
+                                l10n.stepXOfY(_revealedStep, totalSteps),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          IconButton(
+                            tooltip: l10n.replayAnimation,
+                            icon: const Icon(
+                              Icons.replay_rounded,
+                              color: Colors.white,
+                            ),
+                            onPressed: _replayCurrentSlide,
+                          ),
+                          IconButton(
+                            tooltip: l10n.rotateScreen,
+                            icon: Icon(
+                              _isLandscape
+                                  ? Icons.screen_lock_rotation_rounded
+                                  : Icons.screen_rotation_rounded,
+                              color: Colors.white,
+                            ),
+                            onPressed: _toggleLandscape,
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            child: Text(
+                              '${_currentIndex + 1} / $totalSlides',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
 
             // Bottom Overlay Controls
-            AnimatedPositioned(
-              duration: const Duration(milliseconds: 250),
-              bottom: _showControls ? 0 : -90,
+            Positioned(
+              bottom: 0,
               left: 0,
               right: 0,
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(24, 12, 24, 28),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.8),
-                      Colors.transparent,
-                    ],
-                  ),
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.skip_previous_rounded, size: 32, color: Colors.white),
-                      onPressed: _currentIndex > 0 ? _prevSlide : null,
-                    ),
-                    FilledButton.tonalIcon(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.white.withValues(alpha: 0.25),
-                        foregroundColor: Colors.white,
+              child: IgnorePointer(
+                ignoring: !_showControls,
+                child: AnimatedSlide(
+                  duration: const Duration(milliseconds: 220),
+                  offset: _showControls ? Offset.zero : const Offset(0, 1),
+                  child: AnimatedOpacity(
+                    duration: const Duration(milliseconds: 200),
+                    opacity: _showControls ? 1.0 : 0.0,
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 20),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.bottomCenter,
+                          end: Alignment.topCenter,
+                          colors: [
+                            Colors.black.withValues(alpha: 0.85),
+                            Colors.transparent,
+                          ],
+                        ),
                       ),
-                      icon: Icon(_isAutoPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded),
-                      label: Text(_isAutoPlaying ? l10n.autoPlay : l10n.autoPlay),
-                      onPressed: _toggleAutoPlay,
+                      child: SafeArea(
+                        top: false,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (totalSlides > 1) ...[
+                              PageScrubber(
+                                darkOverlayStyle: true,
+                                currentPage: _currentIndex + 1,
+                                totalPages: totalSlides,
+                                labelBuilder: (p) =>
+                                    l10n.slideXOfY(p, totalSlides),
+                                subtitleBuilder: (p) =>
+                                    EncodingUtils.cleanDisplayName(
+                                  widget.deck.slides[p - 1].title,
+                                ),
+                                onPageSelected: (p) => _jumpToSlideIndex(p - 1),
+                              ),
+                              const SizedBox(height: 6),
+                            ],
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                IconButton(
+                                  tooltip: l10n.previousPage,
+                                  icon: Transform.flip(
+                                    flipX: isRtl,
+                                    child: const Icon(
+                                      Icons.skip_previous_rounded,
+                                      size: 32,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  onPressed:
+                                      canStepBack ? _stepBackOrPrevSlide : null,
+                                ),
+                                FilledButton.tonalIcon(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor:
+                                        Colors.white.withValues(alpha: 0.25),
+                                    foregroundColor: Colors.white,
+                                  ),
+                                  icon: Icon(
+                                    _isAutoPlaying
+                                        ? Icons.pause_rounded
+                                        : Icons.play_arrow_rounded,
+                                  ),
+                                  label: Text(
+                                    _isAutoPlaying ? l10n.pause : l10n.autoPlay,
+                                  ),
+                                  onPressed: _toggleAutoPlay,
+                                ),
+                                IconButton(
+                                  tooltip: l10n.nextPage,
+                                  icon: Transform.flip(
+                                    flipX: isRtl,
+                                    child: const Icon(
+                                      Icons.skip_next_rounded,
+                                      size: 32,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                  onPressed: canStepNext
+                                      ? () => _advanceStepOrNextSlide()
+                                      : null,
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.skip_next_rounded, size: 32, color: Colors.white),
-                      onPressed: _currentIndex < totalSlides - 1 ? _nextSlide : null,
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),

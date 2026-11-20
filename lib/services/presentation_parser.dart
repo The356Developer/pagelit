@@ -1,7 +1,10 @@
 import 'dart:typed_data';
+
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:xml/xml.dart';
+
 import 'encoding_utils.dart';
 
 /// Single formatted text run within a slide paragraph.
@@ -54,6 +57,9 @@ abstract class SlideElement {
     required this.width,
     required this.height,
     this.rotation = 0.0,
+    this.shapeId,
+    this.groupShapeId,
+    this.isBackgroundDecor = false,
   });
 
   /// Relative coordinates (0.0 to 1.0) normalized to the slide canvas.
@@ -64,6 +70,15 @@ abstract class SlideElement {
 
   /// Rotation in degrees clockwise.
   final double rotation;
+
+  /// OOXML `<p:cNvPr id="..."/>` identifier for animation targeting.
+  final String? shapeId;
+
+  /// Parent group shape identifier when inside `<p:grpSp>`.
+  final String? groupShapeId;
+
+  /// Whether this element is decorative background / edge chrome rather than foreground content.
+  final bool isBackgroundDecor;
 }
 
 /// A shape or text box on the slide canvas.
@@ -74,6 +89,9 @@ class SlideShapeElement extends SlideElement {
     required super.width,
     required super.height,
     super.rotation = 0.0,
+    super.shapeId,
+    super.groupShapeId,
+    super.isBackgroundDecor = false,
     this.fillColor,
     this.borderColor,
     this.borderWidth = 0.0,
@@ -104,6 +122,9 @@ class SlidePictureElement extends SlideElement {
     required super.width,
     required super.height,
     super.rotation = 0.0,
+    super.shapeId,
+    super.groupShapeId,
+    super.isBackgroundDecor = false,
     required this.imageBytes,
     this.borderRadius = 0.0,
   });
@@ -135,6 +156,9 @@ class SlideTableElement extends SlideElement {
     required super.width,
     required super.height,
     super.rotation = 0.0,
+    super.shapeId,
+    super.groupShapeId,
+    super.isBackgroundDecor = false,
     required this.rows,
     required this.colWidthRatios,
   });
@@ -152,7 +176,64 @@ enum SlideTransitionType {
   pushDown,
   wipe,
   zoom,
+  cover,
+  uncover,
+  split,
+  cut,
   none,
+}
+
+/// Visual effect for an animated shape on a slide (`<p:timing>`).
+enum SlideAnimationEffect {
+  appear,
+  fade,
+  flyIn,
+  floatIn,
+  wipe,
+  zoom,
+  split,
+  emphasis,
+}
+
+/// Entrance direction parsed from OOXML `presetSubtype`.
+enum SlideAnimationDirection {
+  fromBottom,
+  fromLeft,
+  fromRight,
+  fromTop,
+  center,
+}
+
+/// Trigger mode parsed from OOXML `nodeType`.
+enum SlideAnimationTrigger {
+  onClick,
+  withPrevious,
+  afterPrevious,
+}
+
+/// Single step in a slide's OOXML `<p:timing>` animation timeline.
+class SlideAnimationStep {
+  const SlideAnimationStep({
+    required this.shapeId,
+    required this.effect,
+    this.direction = SlideAnimationDirection.center,
+    this.trigger = SlideAnimationTrigger.onClick,
+    this.durationMs = 420,
+    this.delayMs = 0,
+    this.clickGroup = 1,
+    this.isEmphasis = false,
+  });
+
+  final String shapeId;
+  final SlideAnimationEffect effect;
+  final SlideAnimationDirection direction;
+  final SlideAnimationTrigger trigger;
+  final int durationMs;
+  final int delayMs;
+
+  /// `0` = auto-plays on slide entry; `>= 1` = plays on tap step `clickGroup`.
+  final int clickGroup;
+  final bool isEmphasis;
 }
 
 /// A complete presentation slide containing visual elements, extracted text, and media.
@@ -167,6 +248,7 @@ class PresentationSlide {
     this.backgroundImage,
     this.transitionType = SlideTransitionType.fade,
     this.transitionDurationMs = 400,
+    this.animations = const [],
   });
 
   final int slideNumber;
@@ -178,6 +260,18 @@ class PresentationSlide {
   final Uint8List? backgroundImage;
   final SlideTransitionType transitionType;
   final int transitionDurationMs;
+  final List<SlideAnimationStep> animations;
+
+  /// Number of interactive click steps (`clickGroup >= 1`) on this slide.
+  int get animationClickStepCount {
+    int maxGroup = 0;
+    for (final step in animations) {
+      if (step.clickGroup > maxGroup) {
+        maxGroup = step.clickGroup;
+      }
+    }
+    return maxGroup;
+  }
 }
 
 /// An entire parsed presentation deck with canvas dimensions and slides.
@@ -242,16 +336,77 @@ class _TransformContext {
   }
 }
 
+class _PlaceholderTemplate {
+  const _PlaceholderTemplate({
+    this.rect,
+    this.rotation = 0.0,
+    this.fillColor,
+    this.borderColor,
+    this.borderWidth = 0.0,
+    this.defaultFontSize,
+    this.defaultFontColor,
+    this.defaultBold,
+  });
+
+  final Rect? rect;
+  final double rotation;
+  final Color? fillColor;
+  final Color? borderColor;
+  final double borderWidth;
+  final double? defaultFontSize;
+  final Color? defaultFontColor;
+  final bool? defaultBold;
+}
+
+class _LayoutTemplate {
+  const _LayoutTemplate({
+    this.backgroundColor,
+    this.backgroundImage,
+    this.byTypeAndIdx = const {},
+    this.byType = const {},
+  });
+
+  final Color? backgroundColor;
+  final Uint8List? backgroundImage;
+  final Map<String, _PlaceholderTemplate> byTypeAndIdx;
+  final Map<String, _PlaceholderTemplate> byType;
+
+  _PlaceholderTemplate? lookup(String? type, String? idx) {
+    if (type != null && idx != null) {
+      final exact = byTypeAndIdx['$type#$idx'];
+      if (exact != null) return exact;
+    }
+    if (type != null) {
+      final byT = byType[type];
+      if (byT != null) return byT;
+      if (type == 'ctrTitle') return byType['title'];
+      if (type == 'title') return byType['ctrTitle'];
+      if (type == 'obj') return byType['body'];
+      if (type == 'body') return byType['obj'];
+    }
+    return null;
+  }
+}
+
 /// Comprehensive parser for PowerPoint (.pptx) presentations.
-/// Extracts high-fidelity visual layout (geometry, shapes, styling, fonts, images)
-/// and preserves backward-compatible text / bullets for outline and search.
+/// Extracts high-fidelity visual layout (geometry, shapes, styling, fonts, images),
+/// slide transitions, and `<p:timing>` animations, while preserving text / bullets
+/// for outline and search.
 class PresentationParser {
   const PresentationParser._();
 
   static const int _defaultSlideWidthEmu = 12192000; // 13.33 inches (16:9 widescreen)
   static const int _defaultSlideHeightEmu = 6858000; // 7.5 inches
+  static const int _isolateThresholdBytes = 32 * 1024;
 
   static Future<PresentationDeck> parse(Uint8List bytes) async {
+    if (!kIsWeb && bytes.length >= _isolateThresholdBytes) {
+      return compute(parseSync, bytes);
+    }
+    return parseSync(bytes);
+  }
+
+  static PresentationDeck parseSync(Uint8List bytes) {
     final archive = ZipDecoder().decodeBytes(bytes);
 
     // 1. Read slide dimensions from presentation.xml
@@ -323,13 +478,7 @@ class PresentationParser {
           final id = rel.getAttribute('Id');
           final target = rel.getAttribute('Target');
           if (id != null && target != null && target.contains('slide')) {
-            final normalized = target.startsWith('/')
-                ? target.substring(1)
-                : target.startsWith('slides/')
-                    ? 'ppt/$target'
-                    : target.startsWith('ppt/')
-                        ? target
-                        : 'ppt/$target';
+            final normalized = _normalizePptTarget('ppt/', target);
             slidePathsMap[id] = normalized;
           }
         }
@@ -360,6 +509,9 @@ class PresentationParser {
       slidePaths.sort();
     }
 
+    final mediaCache = <String, Uint8List>{};
+    final masterCache = <String, _LayoutTemplate>{};
+    final layoutCache = <String, _LayoutTemplate>{};
     final parsedSlides = <PresentationSlide>[];
 
     for (int i = 0; i < slidePaths.length; i++) {
@@ -368,7 +520,7 @@ class PresentationParser {
       if (slideFile == null) continue;
 
       // Map slide-specific relationships (media, slide layouts)
-      final relsPath = path.replaceFirst('ppt/slides/', 'ppt/slides/_rels/').replaceAll('.xml', '.xml.rels');
+      final relsPath = _relsPathFor(path);
       final slideRelsFile = archive.findFile(relsPath);
       final mediaMap = <String, String>{};
       String? layoutPath;
@@ -384,57 +536,42 @@ class PresentationParser {
             if (id == null || target == null) continue;
 
             if (type.contains('slideLayout') || target.contains('slideLayout')) {
-              layoutPath = target.startsWith('../')
-                  ? 'ppt/${target.substring(3)}'
-                  : 'ppt/$target';
+              layoutPath = _normalizePptTarget(_dirOf(path), target);
             } else if (target.contains('media/')) {
-              final fileName = target.split('/').last;
-              mediaMap[id] = 'ppt/media/$fileName';
+              mediaMap[id] = _normalizePptTarget(_dirOf(path), target);
             }
           }
         } catch (_) {}
       }
 
+      // Load and cache slideLayout (+ its parent slideMaster) template
+      final _LayoutTemplate? layoutTemplate = layoutPath != null
+          ? _loadLayoutTemplate(
+              layoutPath: layoutPath,
+              archive: archive,
+              themeColors: themeColors,
+              slideWidthEmu: slideWidthEmu,
+              slideHeightEmu: slideHeightEmu,
+              mediaCache: mediaCache,
+              masterCache: masterCache,
+              layoutCache: layoutCache,
+            )
+          : null;
+
       // Parse slide XML
       final slideXml = EncodingUtils.decodeDocumentBytes(slideFile.content as List<int>);
       final slideDoc = XmlDocument.parse(slideXml);
 
-      // Slide background
-      Color? slideBackgroundColor;
-      Uint8List? slideBackgroundImage;
-
-      final bgElem = slideDoc.findAllElements('p:bg').firstOrNull ??
-          slideDoc.findAllElements('bg').firstOrNull;
-      if (bgElem != null) {
-        slideBackgroundColor = _parseColorFromParent(bgElem, themeColors);
-        final blip = bgElem.findAllElements('a:blip').firstOrNull ??
-            bgElem.findAllElements('blip').firstOrNull;
-        if (blip != null) {
-          final rEmbed = blip.getAttribute('r:embed');
-          if (rEmbed != null && mediaMap.containsKey(rEmbed)) {
-            final bgFile = archive.findFile(mediaMap[rEmbed]!);
-            if (bgFile != null) {
-              slideBackgroundImage = Uint8List.fromList(bgFile.content as List<int>);
-            }
-          }
-        }
-      }
-
-      // If no background in slide, check slideLayout background
-      if (slideBackgroundColor == null && slideBackgroundImage == null && layoutPath != null) {
-        final layoutFile = archive.findFile(layoutPath);
-        if (layoutFile != null) {
-          try {
-            final layoutXml = EncodingUtils.decodeDocumentBytes(layoutFile.content as List<int>);
-            final layoutDoc = XmlDocument.parse(layoutXml);
-            final layoutBg = layoutDoc.findAllElements('p:bg').firstOrNull ??
-                layoutDoc.findAllElements('bg').firstOrNull;
-            if (layoutBg != null) {
-              slideBackgroundColor = _parseColorFromParent(layoutBg, themeColors);
-            }
-          } catch (_) {}
-        }
-      }
+      // Slide background (slide -> layout -> master)
+      final (slideBgColor, slideBgImage) = _parseBackground(
+        doc: slideDoc,
+        archive: archive,
+        mediaMap: mediaMap,
+        mediaCache: mediaCache,
+        themeColors: themeColors,
+      );
+      final Color? slideBackgroundColor = slideBgColor ?? layoutTemplate?.backgroundColor;
+      final Uint8List? slideBackgroundImage = slideBgImage ?? layoutTemplate?.backgroundImage;
 
       final visualElements = <SlideElement>[];
       final allImages = <Uint8List>[];
@@ -448,11 +585,13 @@ class PresentationParser {
           container: spTree,
           archive: archive,
           mediaMap: mediaMap,
+          mediaCache: mediaCache,
           themeColors: themeColors,
           slideWidthEmu: slideWidthEmu,
           slideHeightEmu: slideHeightEmu,
           elementsOut: visualElements,
           imagesOut: allImages,
+          layoutTemplate: layoutTemplate,
         );
       }
 
@@ -488,6 +627,7 @@ class PresentationParser {
 
       final transitionType = _parseTransition(slideDoc);
       final transitionDurationMs = _parseTransitionDuration(slideDoc);
+      final animations = _parseTiming(slideDoc);
 
       parsedSlides.add(
         PresentationSlide(
@@ -500,6 +640,7 @@ class PresentationParser {
           backgroundImage: slideBackgroundImage,
           transitionType: transitionType,
           transitionDurationMs: transitionDurationMs,
+          animations: animations,
         ),
       );
     }
@@ -512,17 +653,315 @@ class PresentationParser {
     );
   }
 
+  static String _dirOf(String path) {
+    final idx = path.lastIndexOf('/');
+    return idx >= 0 ? path.substring(0, idx + 1) : '';
+  }
+
+  static String _relsPathFor(String xmlPath) {
+    final dir = _dirOf(xmlPath);
+    final fileName = xmlPath.substring(dir.length);
+    return '${dir}_rels/$fileName.rels';
+  }
+
+  static String _normalizePptTarget(String baseDir, String target) {
+    if (target.startsWith('/')) {
+      return target.substring(1);
+    }
+    final combined = '$baseDir$target';
+    final parts = combined.split('/');
+    final resolved = <String>[];
+    for (final part in parts) {
+      if (part.isEmpty || part == '.') continue;
+      if (part == '..') {
+        if (resolved.isNotEmpty) resolved.removeLast();
+      } else {
+        resolved.add(part);
+      }
+    }
+    return resolved.join('/');
+  }
+
+  static Uint8List? _loadMediaBytes(
+    Archive archive,
+    String path,
+    Map<String, Uint8List> mediaCache,
+  ) {
+    final cached = mediaCache[path];
+    if (cached != null) return cached;
+
+    var file = archive.findFile(path);
+    if (file == null) {
+      final fileName = path.split('/').last;
+      file = archive.findFile('ppt/media/$fileName');
+    }
+    if (file == null) return null;
+
+    final bytes = Uint8List.fromList(file.content as List<int>);
+    mediaCache[path] = bytes;
+    return bytes;
+  }
+
+  static (Color?, Uint8List?) _parseBackground({
+    required XmlDocument doc,
+    required Archive archive,
+    required Map<String, String> mediaMap,
+    required Map<String, Uint8List> mediaCache,
+    required Map<String, Color> themeColors,
+  }) {
+    Color? bgColor;
+    Uint8List? bgImage;
+    final bgElem =
+        doc.findAllElements('p:bg').firstOrNull ?? doc.findAllElements('bg').firstOrNull;
+    if (bgElem != null) {
+      bgColor = _parseColorFromParent(bgElem, themeColors);
+      if (bgColor == null) {
+        final bgRef = bgElem.findAllElements('p:bgRef').firstOrNull ??
+            bgElem.findAllElements('bgRef').firstOrNull;
+        if (bgRef != null) {
+          bgColor = _parseRawColor(bgRef, themeColors);
+        }
+      }
+      final blip = bgElem.findAllElements('a:blip').firstOrNull ??
+          bgElem.findAllElements('blip').firstOrNull;
+      if (blip != null) {
+        final rEmbed = blip.getAttribute('r:embed');
+        if (rEmbed != null && mediaMap.containsKey(rEmbed)) {
+          bgImage = _loadMediaBytes(archive, mediaMap[rEmbed]!, mediaCache);
+        }
+      }
+    }
+    return (bgColor, bgImage);
+  }
+
+  static Map<String, String> _readRelsMediaAndMaster(
+    Archive archive,
+    String xmlPath, {
+    required void Function(String masterPath) onMasterFound,
+  }) {
+    final mediaMap = <String, String>{};
+    final relsFile = archive.findFile(_relsPathFor(xmlPath));
+    if (relsFile == null) return mediaMap;
+
+    try {
+      final relsXml = EncodingUtils.decodeDocumentBytes(relsFile.content as List<int>);
+      final relsDoc = XmlDocument.parse(relsXml);
+      final baseDir = _dirOf(xmlPath);
+      for (final rel in relsDoc.findAllElements('Relationship')) {
+        final id = rel.getAttribute('Id');
+        final target = rel.getAttribute('Target');
+        final type = rel.getAttribute('Type') ?? '';
+        if (id == null || target == null) continue;
+        if (type.contains('slideMaster') || target.contains('slideMaster')) {
+          onMasterFound(_normalizePptTarget(baseDir, target));
+        } else if (target.contains('media/')) {
+          mediaMap[id] = _normalizePptTarget(baseDir, target);
+        }
+      }
+    } catch (_) {}
+    return mediaMap;
+  }
+
+  static _LayoutTemplate? _loadLayoutTemplate({
+    required String layoutPath,
+    required Archive archive,
+    required Map<String, Color> themeColors,
+    required int slideWidthEmu,
+    required int slideHeightEmu,
+    required Map<String, Uint8List> mediaCache,
+    required Map<String, _LayoutTemplate> masterCache,
+    required Map<String, _LayoutTemplate> layoutCache,
+  }) {
+    final existing = layoutCache[layoutPath];
+    if (existing != null) return existing;
+
+    final layoutFile = archive.findFile(layoutPath);
+    if (layoutFile == null) return null;
+
+    String? masterPath;
+    final layoutMediaMap = _readRelsMediaAndMaster(
+      archive,
+      layoutPath,
+      onMasterFound: (p) => masterPath = p,
+    );
+
+    _LayoutTemplate? masterTemplate;
+    if (masterPath != null) {
+      masterTemplate = masterCache[masterPath];
+      if (masterTemplate == null) {
+        final masterFile = archive.findFile(masterPath!);
+        if (masterFile != null) {
+          try {
+            final masterMediaMap = _readRelsMediaAndMaster(
+              archive,
+              masterPath!,
+              onMasterFound: (_) {},
+            );
+            final masterDoc = XmlDocument.parse(
+              EncodingUtils.decodeDocumentBytes(masterFile.content as List<int>),
+            );
+            masterTemplate = _parseTemplateDoc(
+              doc: masterDoc,
+              archive: archive,
+              mediaMap: masterMediaMap,
+              mediaCache: mediaCache,
+              themeColors: themeColors,
+              slideWidthEmu: slideWidthEmu,
+              slideHeightEmu: slideHeightEmu,
+            );
+            masterCache[masterPath!] = masterTemplate;
+          } catch (_) {}
+        }
+      }
+    }
+
+    try {
+      final layoutDoc = XmlDocument.parse(
+        EncodingUtils.decodeDocumentBytes(layoutFile.content as List<int>),
+      );
+      final parsedLayout = _parseTemplateDoc(
+        doc: layoutDoc,
+        archive: archive,
+        mediaMap: layoutMediaMap,
+        mediaCache: mediaCache,
+        themeColors: themeColors,
+        slideWidthEmu: slideWidthEmu,
+        slideHeightEmu: slideHeightEmu,
+        parent: masterTemplate,
+      );
+      layoutCache[layoutPath] = parsedLayout;
+      return parsedLayout;
+    } catch (_) {
+      return masterTemplate;
+    }
+  }
+
+  static _LayoutTemplate _parseTemplateDoc({
+    required XmlDocument doc,
+    required Archive archive,
+    required Map<String, String> mediaMap,
+    required Map<String, Uint8List> mediaCache,
+    required Map<String, Color> themeColors,
+    required int slideWidthEmu,
+    required int slideHeightEmu,
+    _LayoutTemplate? parent,
+  }) {
+    final (bgColor, bgImage) = _parseBackground(
+      doc: doc,
+      archive: archive,
+      mediaMap: mediaMap,
+      mediaCache: mediaCache,
+      themeColors: themeColors,
+    );
+
+    final byTypeAndIdx = <String, _PlaceholderTemplate>{
+      ...?parent?.byTypeAndIdx,
+    };
+    final byType = <String, _PlaceholderTemplate>{
+      ...?parent?.byType,
+    };
+
+    for (final sp in doc.findAllElements('p:sp')) {
+      final ph = sp.findAllElements('p:ph').firstOrNull ??
+          sp.findAllElements('ph').firstOrNull;
+      if (ph == null) continue;
+
+      final phType = ph.getAttribute('type') ?? 'body';
+      final phIdx = ph.getAttribute('idx');
+
+      final spPr = sp.findAllElements('p:spPr').firstOrNull ??
+          sp.findAllElements('spPr').firstOrNull;
+      final xfrm = _parseTransform(
+        spPr: spPr,
+        slideWidthEmu: slideWidthEmu,
+        slideHeightEmu: slideHeightEmu,
+      );
+
+      Color? fillColor;
+      Color? borderColor;
+      double borderWidth = 0.0;
+      if (spPr != null) {
+        fillColor = _parseColorFromParent(spPr, themeColors);
+        final ln = spPr.findAllElements('a:ln').firstOrNull ??
+            spPr.findAllElements('ln').firstOrNull;
+        if (ln != null) {
+          borderColor = _parseColorFromParent(ln, themeColors);
+          final wAttr = ln.getAttribute('w');
+          if (wAttr != null) {
+            final emuW = int.tryParse(wAttr) ?? 0;
+            borderWidth = (emuW / 12700.0).clamp(0.5, 12.0);
+          } else if (borderColor != null) {
+            borderWidth = 1.0;
+          }
+        }
+      }
+
+      double? defaultFontSize;
+      Color? defaultFontColor;
+      bool? defaultBold;
+      final defRPr = sp.findAllElements('a:defRPr').firstOrNull ??
+          sp.findAllElements('defRPr').firstOrNull;
+      if (defRPr != null) {
+        final sz = defRPr.getAttribute('sz');
+        if (sz != null) {
+          final szInt = int.tryParse(sz);
+          if (szInt != null && szInt > 0) defaultFontSize = szInt / 100.0;
+        }
+        final b = defRPr.getAttribute('b');
+        if (b != null) defaultBold = b == '1' || b == 'true';
+        defaultFontColor = _parseColorFromParent(defRPr, themeColors);
+      }
+
+      final inherited = parent?.lookup(phType, phIdx);
+      final tpl = _PlaceholderTemplate(
+        rect: xfrm?.$1 ?? inherited?.rect,
+        rotation: xfrm?.$2 ?? inherited?.rotation ?? 0.0,
+        fillColor: fillColor ?? inherited?.fillColor,
+        borderColor: borderColor ?? inherited?.borderColor,
+        borderWidth: borderWidth > 0 ? borderWidth : (inherited?.borderWidth ?? 0.0),
+        defaultFontSize: defaultFontSize ?? inherited?.defaultFontSize,
+        defaultFontColor: defaultFontColor ?? inherited?.defaultFontColor,
+        defaultBold: defaultBold ?? inherited?.defaultBold,
+      );
+
+      if (phIdx != null) {
+        byTypeAndIdx['$phType#$phIdx'] = tpl;
+      }
+      byType[phType] = tpl;
+    }
+
+    return _LayoutTemplate(
+      backgroundColor: bgColor ?? parent?.backgroundColor,
+      backgroundImage: bgImage ?? parent?.backgroundImage,
+      byTypeAndIdx: byTypeAndIdx,
+      byType: byType,
+    );
+  }
+
+  static String? _extractShapeId(XmlElement element, String nvContainerTag) {
+    final nv = element.findElements(nvContainerTag).firstOrNull ??
+        element.findElements(nvContainerTag.replaceFirst('p:', '')).firstOrNull;
+    final cNvPr = nv?.findElements('p:cNvPr').firstOrNull ??
+        nv?.findElements('cNvPr').firstOrNull ??
+        element.findAllElements('p:cNvPr').firstOrNull ??
+        element.findAllElements('cNvPr').firstOrNull;
+    return cNvPr?.getAttribute('id');
+  }
+
   /// Parses all children of a container (spTree or grpSp) in z-order.
   static void _parseShapeContainer({
     required XmlElement container,
     required Archive archive,
     required Map<String, String> mediaMap,
+    required Map<String, Uint8List> mediaCache,
     required Map<String, Color> themeColors,
     required int slideWidthEmu,
     required int slideHeightEmu,
     required List<SlideElement> elementsOut,
     required List<Uint8List> imagesOut,
+    _LayoutTemplate? layoutTemplate,
     _TransformContext? transformContext,
+    String? groupShapeId,
     int? fallbackIndex,
   }) {
     int autoFlowIndex = fallbackIndex ?? 0;
@@ -532,6 +971,7 @@ class PresentationParser {
 
       if (name == 'pic') {
         // ------------------ PICTURE ------------------
+        final shapeId = _extractShapeId(child, 'p:nvPicPr');
         final xfrm = _parseTransform(
           spPr: child.findAllElements('p:spPr').firstOrNull ?? child.findAllElements('spPr').firstOrNull,
           slideWidthEmu: slideWidthEmu,
@@ -544,9 +984,8 @@ class PresentationParser {
         if (blip != null) {
           final rEmbed = blip.getAttribute('r:embed');
           if (rEmbed != null && mediaMap.containsKey(rEmbed)) {
-            final imgFile = archive.findFile(mediaMap[rEmbed]!);
-            if (imgFile != null) {
-              imgBytes = Uint8List.fromList(imgFile.content as List<int>);
+            imgBytes = _loadMediaBytes(archive, mediaMap[rEmbed]!, mediaCache);
+            if (imgBytes != null) {
               imagesOut.add(imgBytes);
             }
           }
@@ -564,20 +1003,26 @@ class PresentationParser {
               width: rect.width,
               height: rect.height,
               rotation: rot,
+              shapeId: shapeId,
+              groupShapeId: groupShapeId,
               imageBytes: imgBytes,
             ),
           );
         }
       } else if (name == 'sp') {
         // ------------------ SHAPE / TEXT ------------------
+        final shapeId = _extractShapeId(child, 'p:nvSpPr');
         final spPr = child.findAllElements('p:spPr').firstOrNull ?? child.findAllElements('spPr').firstOrNull;
         final txBody = child.findAllElements('p:txBody').firstOrNull ?? child.findAllElements('txBody').firstOrNull;
 
-        final isPlaceholder = child.findAllElements('p:ph').isNotEmpty || child.findAllElements('ph').isNotEmpty;
-        final isTitle = child.findAllElements('p:ph').any((ph) {
-          final type = ph.getAttribute('type');
-          return type == 'title' || type == 'ctrTitle';
-        });
+        final ph = child.findAllElements('p:ph').firstOrNull ??
+            child.findAllElements('ph').firstOrNull;
+        final isPlaceholder = ph != null;
+        final phType = ph?.getAttribute('type') ?? (isPlaceholder ? 'body' : null);
+        final phIdx = ph?.getAttribute('idx');
+        final phTemplate = isPlaceholder ? layoutTemplate?.lookup(phType, phIdx) : null;
+
+        final isTitle = phType == 'title' || phType == 'ctrTitle';
 
         final xfrm = _parseTransform(
           spPr: spPr,
@@ -616,6 +1061,12 @@ class PresentationParser {
               isCircle = true;
             }
           }
+        }
+
+        fillColor ??= phTemplate?.fillColor;
+        if (borderColor == null && phTemplate?.borderColor != null) {
+          borderColor = phTemplate!.borderColor;
+          borderWidth = phTemplate.borderWidth;
         }
 
         // Parse paragraphs
@@ -674,11 +1125,11 @@ class PresentationParser {
                 final text = t?.innerText ?? '';
                 if (text.isEmpty) continue;
 
-                double fontSize = isTitle ? 28.0 : 16.0;
-                bool bold = isTitle;
+                double fontSize = phTemplate?.defaultFontSize ?? (isTitle ? 28.0 : 16.0);
+                bool bold = phTemplate?.defaultBold ?? isTitle;
                 bool italic = false;
                 bool underline = false;
-                Color? fontColor;
+                Color? fontColor = phTemplate?.defaultFontColor;
                 String? fontFamily;
 
                 if (rPr != null) {
@@ -699,7 +1150,7 @@ class PresentationParser {
                   final u = rPr.getAttribute('u');
                   if (u != null && u != 'none') underline = true;
 
-                  fontColor = _parseColorFromParent(rPr, themeColors);
+                  fontColor = _parseColorFromParent(rPr, themeColors) ?? fontColor;
 
                   final latin = rPr.findAllElements('a:latin').firstOrNull ??
                       rPr.findAllElements('latin').firstOrNull;
@@ -743,10 +1194,16 @@ class PresentationParser {
 
         if (hasText || hasVisualBox) {
           final rect = xfrm?.$1 ??
+              phTemplate?.rect ??
               (isTitle
                   ? const Rect.fromLTWH(0.08, 0.08, 0.84, 0.16)
                   : _fallbackRectForIndex(autoFlowIndex++));
-          final rot = xfrm?.$2 ?? 0.0;
+          final rot = xfrm?.$2 ?? phTemplate?.rotation ?? 0.0;
+
+          final isBgDecor = !hasText &&
+              ((rect.width * rect.height >= 0.60) ||
+                  (rect.width >= 0.90 && rect.height <= 0.08) ||
+                  (rect.height >= 0.90 && rect.width <= 0.08));
 
           elementsOut.add(
             SlideShapeElement(
@@ -755,6 +1212,9 @@ class PresentationParser {
               width: rect.width,
               height: rect.height,
               rotation: rot,
+              shapeId: shapeId,
+              groupShapeId: groupShapeId,
+              isBackgroundDecor: isBgDecor,
               fillColor: fillColor,
               borderColor: borderColor,
               borderWidth: borderWidth,
@@ -768,6 +1228,7 @@ class PresentationParser {
         }
       } else if (name == 'graphicFrame') {
         // ------------------ TABLE / GRAPHIC ------------------
+        final shapeId = _extractShapeId(child, 'p:nvGraphicFramePr');
         final xfrm = _parseTransform(
           spPr: child.findAllElements('p:spPr').firstOrNull ?? child.findAllElements('spPr').firstOrNull ?? child,
           slideWidthEmu: slideWidthEmu,
@@ -823,6 +1284,8 @@ class PresentationParser {
                 width: rect.width,
                 height: rect.height,
                 rotation: xfrm?.$2 ?? 0.0,
+                shapeId: shapeId,
+                groupShapeId: groupShapeId,
                 rows: rows,
                 colWidthRatios: colWidthRatios,
               ),
@@ -831,6 +1294,7 @@ class PresentationParser {
         }
       } else if (name == 'grpSp') {
         // ------------------ GROUP SHAPES ------------------
+        final grpId = _extractShapeId(child, 'p:nvGrpSpPr') ?? groupShapeId;
         final grpSpPr = child.findAllElements('p:grpSpPr').firstOrNull ?? child.findAllElements('grpSpPr').firstOrNull;
         _TransformContext? groupContext;
 
@@ -878,12 +1342,15 @@ class PresentationParser {
           container: child,
           archive: archive,
           mediaMap: mediaMap,
+          mediaCache: mediaCache,
           themeColors: themeColors,
           slideWidthEmu: slideWidthEmu,
           slideHeightEmu: slideHeightEmu,
           elementsOut: elementsOut,
           imagesOut: imagesOut,
+          layoutTemplate: layoutTemplate,
           transformContext: groupContext ?? transformContext,
+          groupShapeId: grpId,
           fallbackIndex: autoFlowIndex,
         );
       }
@@ -1052,14 +1519,16 @@ class PresentationParser {
 
   /// Extracts slide-to-slide transition from `<p:transition>`.
   static SlideTransitionType _parseTransition(XmlDocument slideDoc) {
-    final transitionElem = slideDoc.findAllElements('p:transition').firstOrNull ??
-        slideDoc.findAllElements('transition').firstOrNull;
-    if (transitionElem == null) return SlideTransitionType.none;
+    final transitions = slideDoc.findAllElements('p:transition').isNotEmpty
+        ? slideDoc.findAllElements('p:transition')
+        : slideDoc.findAllElements('transition');
+    if (transitions.isEmpty) return SlideTransitionType.none;
 
-    if (transitionElem.findAllElements('p:fade').isNotEmpty ||
-        transitionElem.findAllElements('fade').isNotEmpty) {
-      return SlideTransitionType.fade;
-    }
+    final transitionElem = transitions.first;
+    bool hasTag(String localName) =>
+        transitionElem.findAllElements('p:$localName').isNotEmpty ||
+        transitionElem.findAllElements(localName).isNotEmpty;
+
     final push = transitionElem.findAllElements('p:push').firstOrNull ??
         transitionElem.findAllElements('push').firstOrNull;
     if (push != null) {
@@ -1070,13 +1539,15 @@ class PresentationParser {
       if (dir == 'd') return SlideTransitionType.pushDown;
       return SlideTransitionType.pushLeft;
     }
-    if (transitionElem.findAllElements('p:wipe').isNotEmpty ||
-        transitionElem.findAllElements('wipe').isNotEmpty) {
-      return SlideTransitionType.wipe;
-    }
-    if (transitionElem.findAllElements('p:zoom').isNotEmpty ||
-        transitionElem.findAllElements('zoom').isNotEmpty) {
-      return SlideTransitionType.zoom;
+
+    if (hasTag('cover')) return SlideTransitionType.cover;
+    if (hasTag('pull')) return SlideTransitionType.uncover;
+    if (hasTag('split')) return SlideTransitionType.split;
+    if (hasTag('cut')) return SlideTransitionType.cut;
+    if (hasTag('wipe') || hasTag('blinds')) return SlideTransitionType.wipe;
+    if (hasTag('zoom')) return SlideTransitionType.zoom;
+    if (hasTag('fade') || hasTag('dissolve') || hasTag('morph')) {
+      return SlideTransitionType.fade;
     }
     return SlideTransitionType.fade;
   }
@@ -1095,6 +1566,179 @@ class PresentationParser {
     if (spd == 'slow') return 600;
     if (spd == 'fast') return 250;
     return 400;
+  }
+
+  /// Extracts OOXML `<p:timing>` entrance and emphasis animations.
+  static List<SlideAnimationStep> _parseTiming(XmlDocument slideDoc) {
+    final timing = slideDoc.findAllElements('p:timing').firstOrNull ??
+        slideDoc.findAllElements('timing').firstOrNull;
+    if (timing == null) return const [];
+
+    // Prefer mainSeq if present so interactive triggers don't pollute tap timeline.
+    XmlElement root = timing;
+    for (final cTn in timing.findAllElements('p:cTn')) {
+      if (cTn.getAttribute('nodeType') == 'mainSeq') {
+        root = cTn;
+        break;
+      }
+    }
+    if (identical(root, timing)) {
+      for (final cTn in timing.findAllElements('cTn')) {
+        if (cTn.getAttribute('nodeType') == 'mainSeq') {
+          root = cTn;
+          break;
+        }
+      }
+    }
+
+    final steps = <SlideAnimationStep>[];
+    final seenPairs = <String>{};
+    int clickGroup = 0;
+    bool currentGroupHasSteps = false;
+
+    void walk(
+      XmlElement node,
+      SlideAnimationTrigger inheritedTrigger,
+      int inheritedDelay,
+    ) {
+      for (final child in node.children.whereType<XmlElement>()) {
+        final local = child.name.local;
+        if (local == 'cTn') {
+          final nodeType = child.getAttribute('nodeType');
+          SlideAnimationTrigger trigger = inheritedTrigger;
+
+          if (nodeType == 'clickEffect') {
+            if (clickGroup == 0 || currentGroupHasSteps) {
+              clickGroup++;
+              currentGroupHasSteps = false;
+            }
+            trigger = SlideAnimationTrigger.onClick;
+          } else if (nodeType == 'withEffect') {
+            trigger = SlideAnimationTrigger.withPrevious;
+          } else if (nodeType == 'afterEffect') {
+            trigger = SlideAnimationTrigger.afterPrevious;
+          }
+
+          final delayFromCond = _extractStartDelayMs(child) ?? inheritedDelay;
+          final presetClass = child.getAttribute('presetClass');
+
+          if (presetClass == 'exit') {
+            // Skip exit animations so elements aren't hidden prior to reveal.
+            continue;
+          }
+
+          if (presetClass == 'entr' || presetClass == 'emph') {
+            final isEmphasis = presetClass == 'emph';
+            final presetId = child.getAttribute('presetID');
+            final subtype = child.getAttribute('presetSubtype');
+
+            final effect = isEmphasis
+                ? SlideAnimationEffect.emphasis
+                : _mapPresetIdToEffect(presetId);
+            final direction = _mapSubtypeToDirection(subtype);
+            final durMs = _extractAnimationDurationMs(child, effect);
+            final effectiveDelay =
+                trigger == SlideAnimationTrigger.afterPrevious &&
+                        delayFromCond == 0
+                    ? 180
+                    : delayFromCond;
+
+            final targetIds = <String>{};
+            for (final spTgt in child.findAllElements('p:spTgt')) {
+              final spid = spTgt.getAttribute('spid');
+              if (spid != null && spid.isNotEmpty) targetIds.add(spid);
+            }
+            for (final spTgt in child.findAllElements('spTgt')) {
+              final spid = spTgt.getAttribute('spid');
+              if (spid != null && spid.isNotEmpty) targetIds.add(spid);
+            }
+
+            for (final spid in targetIds) {
+              final dedupKey = '$spid#$clickGroup';
+              if (!seenPairs.add(dedupKey)) continue;
+              steps.add(
+                SlideAnimationStep(
+                  shapeId: spid,
+                  effect: effect,
+                  direction: direction,
+                  trigger: trigger,
+                  durationMs: durMs,
+                  delayMs: effectiveDelay,
+                  clickGroup: clickGroup,
+                  isEmphasis: isEmphasis,
+                ),
+              );
+              currentGroupHasSteps = true;
+            }
+            continue;
+          }
+
+          walk(child, trigger, delayFromCond);
+        } else {
+          walk(child, inheritedTrigger, inheritedDelay);
+        }
+      }
+    }
+
+    walk(root, SlideAnimationTrigger.withPrevious, 0);
+    return steps;
+  }
+
+  static int? _extractStartDelayMs(XmlElement cTn) {
+    final stCondLst = cTn.findElements('p:stCondLst').firstOrNull ??
+        cTn.findElements('stCondLst').firstOrNull;
+    if (stCondLst == null) return null;
+    for (final cond in stCondLst.children.whereType<XmlElement>()) {
+      if (cond.name.local != 'cond') continue;
+      final delayAttr = cond.getAttribute('delay');
+      if (delayAttr != null && delayAttr != 'indefinite') {
+        final ms = int.tryParse(delayAttr);
+        if (ms != null && ms >= 0) return ms.clamp(0, 3000);
+      }
+    }
+    return null;
+  }
+
+  static int _extractAnimationDurationMs(
+    XmlElement cTn,
+    SlideAnimationEffect effect,
+  ) {
+    final directDur = int.tryParse(cTn.getAttribute('dur') ?? '');
+    if (directDur != null && directDur > 1) {
+      return directDur.clamp(120, 2000);
+    }
+    for (final childCtn in cTn.findAllElements('p:cTn')) {
+      final d = int.tryParse(childCtn.getAttribute('dur') ?? '');
+      if (d != null && d > 1) return d.clamp(120, 2000);
+    }
+    for (final childCtn in cTn.findAllElements('cTn')) {
+      final d = int.tryParse(childCtn.getAttribute('dur') ?? '');
+      if (d != null && d > 1) return d.clamp(120, 2000);
+    }
+    return effect == SlideAnimationEffect.appear ? 80 : 420;
+  }
+
+  static SlideAnimationEffect _mapPresetIdToEffect(String? presetId) {
+    return switch (presetId) {
+      '1' => SlideAnimationEffect.appear,
+      '2' => SlideAnimationEffect.flyIn,
+      '10' => SlideAnimationEffect.fade,
+      '16' => SlideAnimationEffect.split,
+      '22' => SlideAnimationEffect.wipe,
+      '23' || '37' || '53' => SlideAnimationEffect.zoom,
+      '42' => SlideAnimationEffect.floatIn,
+      _ => SlideAnimationEffect.fade,
+    };
+  }
+
+  static SlideAnimationDirection _mapSubtypeToDirection(String? subtype) {
+    return switch (subtype) {
+      '4' => SlideAnimationDirection.fromBottom,
+      '8' => SlideAnimationDirection.fromLeft,
+      '2' => SlideAnimationDirection.fromRight,
+      '1' => SlideAnimationDirection.fromTop,
+      _ => SlideAnimationDirection.center,
+    };
   }
 
   static const Map<String, Color> _presetColors = {

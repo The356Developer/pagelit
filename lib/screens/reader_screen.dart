@@ -6,20 +6,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:syncfusion_flutter_pdfviewer/pdfviewer.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
-import '../ads/ad_banner.dart';
 import '../l10n/app_localizations.dart';
 import '../services/device_pdfs.dart';
 import '../services/encoding_utils.dart';
 import '../services/gallery_saver.dart';
 import '../services/gemini_share_service.dart';
+import '../services/pdf_toc_extractor.dart';
 import '../services/reading_prefs.dart';
 import '../services/reading_progress.dart';
 import '../theme/app_theme.dart';
+import '../widgets/page_scrubber.dart';
 import '../widgets/pdf_glyph.dart';
 import 'settings_screen.dart';
 
@@ -62,14 +62,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   _Tool _tool = _Tool.pan;
   Color _color = ReadingPrefs.annotationColor.value;
-  int _pageNumber = 1;
+  final ValueNotifier<int> _pageNumberNotifier = ValueNotifier<int>(1);
+  int get _pageNumber => _pageNumberNotifier.value;
   int _pageCount = 0;
   bool _isLoaded = false;
   bool _isBusy = false;
   bool _isSearchOpen = false;
   int _quarterTurns = 0;
   String? _password;
-  PdfBookmarkBase? _bookmarks;
+  PdfTocResult? _tocResult;
+  Future<PdfTocResult>? _tocFuture;
+  Timer? _tocScanDelayTimer;
+  bool _hasRestoredInitialPosition = false;
 
   /// Annotation currently selected in pan mode (offered for recolour/delete).
   Annotation? _selectedAnnotation;
@@ -104,17 +108,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
       password: _password,
       pageLayoutMode: ReadingPrefs.layoutMode.value,
       scrollDirection: ReadingPrefs.scrollDirection.value,
+      canShowScrollHead: false,
+      canShowScrollStatus: false,
+      canShowPaginationDialog: false,
       canShowTextSelectionMenu: false,
+      maxZoomLevel: 4.0,
+      pageSpacing: 6,
+      initialPageNumber: _pageNumberNotifier.value,
       onTextSelectionChanged: _onTextSelectionChanged,
       onDocumentLoaded: (details) {
         _controller.annotationSettings.author = 'Pagelit';
         _applyColorToSettings(_color);
-        _bookmarks = details.document.bookmarks;
+        final tier1 = PdfTocExtractor.extractFromBookmarks(details.document);
         setState(() {
           _isLoaded = true;
           _pageCount = _controller.pageCount;
+          if (tier1.isNotEmpty) {
+            _tocResult = tier1;
+          }
         });
-        _restorePosition();
+        if (!_hasRestoredInitialPosition) {
+          _hasRestoredInitialPosition = true;
+          _restorePosition();
+        }
+        if (tier1.isEmpty) {
+          _scheduleBackgroundTocScan();
+        }
       },
       onDocumentLoadFailed: _handleLoadFailed,
       onHyperlinkClicked: (details) async {
@@ -127,11 +146,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
         }
       },
       onPageChanged: (details) {
-        setState(() {
-          _pageNumber = details.newPageNumber;
-          _selectedText = null;
-          _selectedRegion = null;
-        });
+        _pageNumberNotifier.value = details.newPageNumber;
+        if (_selectedText != null || _selectedRegion != null) {
+          setState(() {
+            _selectedText = null;
+            _selectedRegion = null;
+          });
+        }
         _scheduleProgressSave();
       },
       onAnnotationAdded: _onAnnotationAdded,
@@ -139,6 +160,52 @@ class _ReaderScreenState extends State<ReaderScreen> {
       onAnnotationSelected: _onAnnotationSelected,
       onAnnotationDeselected: _onAnnotationDeselected,
     );
+  }
+
+  void _onReadingPrefLayoutOrScrollChanged() {
+    if (!mounted) return;
+    setState(() {
+      _initViewer();
+    });
+  }
+
+  void _scheduleBackgroundTocScan() {
+    _tocScanDelayTimer?.cancel();
+    _tocScanDelayTimer = Timer(const Duration(milliseconds: 350), () async {
+      if (!mounted || _tocResult != null || _tocFuture != null) return;
+      try {
+        final len = await File(widget.filePath).length();
+        if (len > 45 * 1024 * 1024) return;
+      } catch (_) {
+        return;
+      }
+      if (!mounted || _tocResult != null || _tocFuture != null) return;
+      _startBackgroundTocScan();
+    });
+  }
+
+  Future<PdfTocResult> _startBackgroundTocScan() {
+    if (_tocFuture != null) return _tocFuture!;
+    Future<PdfTocResult> runScan() async {
+      try {
+        final res = await PdfTocExtractor.extractFromFile(
+          widget.filePath,
+          password: _password,
+        );
+        if (mounted) {
+          setState(() => _tocResult = res);
+        }
+        return res;
+      } catch (_) {
+        if (mounted) {
+          setState(() => _tocResult = PdfTocResult.empty);
+        }
+        return PdfTocResult.empty;
+      }
+    }
+
+    _tocFuture = runScan();
+    return _tocFuture!;
   }
 
   void _handleLoadFailed(PdfDocumentLoadFailedDetails details) {
@@ -202,26 +269,43 @@ class _ReaderScreenState extends State<ReaderScreen> {
     setState(() {
       _password = entered;
       _isLoaded = false;
+      _tocResult = null;
+      _tocFuture = null;
       _initViewer();
     });
   }
 
   void _openBookmarksSheet() {
-    final l10n = context.l10n;
-    if (_bookmarks == null || _bookmarks!.count == 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.noTableOfContents)),
-      );
-      return;
-    }
+    if (!_isLoaded) return;
+    final pendingFuture =
+        _tocResult != null ? null : (_tocFuture ?? _startBackgroundTocScan());
     showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
       builder: (context) => _OutlineSheet(
-        bookmarks: _bookmarks!,
-        onSelect: (bm) => _controller.jumpToBookmark(bm),
+        initialResult: _tocResult,
+        pendingFuture: pendingFuture,
+        currentPage: _pageNumberNotifier.value,
+        onSelect: _jumpToTocEntry,
       ),
     );
+  }
+
+  void _jumpToTocEntry(PdfTocEntry entry) {
+    if (entry.bookmark != null) {
+      try {
+        final hasDirectDest = entry.bookmark!.destination != null ||
+            entry.bookmark!.namedDestination?.destination != null;
+        if (hasDirectDest) {
+          _controller.jumpToBookmark(entry.bookmark!);
+          return;
+        }
+      } catch (_) {}
+    }
+    if (entry.pageNumber != null) {
+      _controller.jumpToPage(entry.pageNumber!);
+    }
   }
 
   void _rotateClockwise() {
@@ -244,18 +328,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.initState();
     _initViewer();
     ReadingPrefs.keepScreenOn.addListener(_applyKeepScreenOn);
+    ReadingPrefs.layoutMode.addListener(_onReadingPrefLayoutOrScrollChanged);
+    ReadingPrefs.scrollDirection.addListener(_onReadingPrefLayoutOrScrollChanged);
     _applyKeepScreenOn();
   }
 
   @override
   void dispose() {
     ReadingPrefs.keepScreenOn.removeListener(_applyKeepScreenOn);
+    ReadingPrefs.layoutMode.removeListener(_onReadingPrefLayoutOrScrollChanged);
+    ReadingPrefs.scrollDirection.removeListener(_onReadingPrefLayoutOrScrollChanged);
+    _tocScanDelayTimer?.cancel();
     unawaited(WakelockPlus.disable());
     if (_immersive) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     }
     _progressDebounce?.cancel();
     _saveProgress();
+    _pageNumberNotifier.dispose();
     _commentInput.dispose();
     _searchFieldController.dispose();
     _jumpInput.dispose();
@@ -856,9 +946,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 if (_pageCount > 0)
                   Padding(
                     padding: const EdgeInsetsDirectional.only(end: 4),
-                    child: _PagePill(
-                      label: '$_pageNumber / $_pageCount',
-                      onTap: _promptJumpToPage,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _pageNumberNotifier,
+                      builder: (context, page, _) => _PagePill(
+                        label: '$page / $_pageCount',
+                        onTap: _promptJumpToPage,
+                      ),
                     ),
                   ),
                 IconButton(
@@ -1052,18 +1145,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
           fit: StackFit.expand,
           children: [
             content,
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 250),
-              opacity: comfort == ComfortMode.sepia ? 0.20 : 0,
-              child: const IgnorePointer(
-                child: ColoredBox(color: Color(0xFFE0C489)),
+            if (comfort == ComfortMode.sepia || comfort == ComfortMode.dim)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ColoredBox(
+                    color: comfort == ComfortMode.sepia
+                        ? const Color(0x33E0C489)
+                        : const Color(0x6B000000),
+                  ),
+                ),
               ),
-            ),
-            AnimatedOpacity(
-              duration: const Duration(milliseconds: 250),
-              opacity: comfort == ComfortMode.dim ? 0.42 : 0,
-              child: const IgnorePointer(child: ColoredBox(color: Colors.black)),
-            ),
             if (!_isLoaded) const _OpeningPlaceholder(),
             if (_immersive) ...[
               Positioned(
@@ -1087,9 +1178,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 right: 0,
                 child: SafeArea(
                   child: Center(
-                    child: _PagePill(
-                      label: '$_pageNumber / $_pageCount',
-                      onTap: _promptJumpToPage,
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _pageNumberNotifier,
+                      builder: (context, page, _) => _PagePill(
+                        label: '$page / $_pageCount',
+                        onTap: _promptJumpToPage,
+                      ),
                     ),
                   ),
                 ),
@@ -1547,100 +1641,488 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
             ),
           ),
-          const AdBanner(),
         ],
       ),
     );
   }
 
   Widget _buildScrubber() {
-    final page = _pageNumber.clamp(1, _pageCount);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-      child: Row(
-        children: [
-          Text('$_pageNumber', style: Theme.of(context).textTheme.labelSmall),
-          Expanded(
-            child: Slider(
-              value: page.toDouble(),
-              min: 1,
-              max: _pageCount.toDouble(),
-              divisions: _pageCount > 1 ? _pageCount - 1 : null,
-              onChanged: (value) => setState(() => _pageNumber = value.round()),
-              onChangeEnd: (value) => _controller.jumpToPage(value.round()),
-            ),
+    final l10n = context.l10n;
+    return ValueListenableBuilder<int>(
+      valueListenable: _pageNumberNotifier,
+      builder: (context, page, _) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(6, 4, 6, 0),
+          child: PageScrubber(
+            currentPage: page,
+            totalPages: _pageCount,
+            chapterPages: _tocResult?.topLevelPages ?? const [],
+            labelBuilder: (p) => l10n.pageNumberLabel(p, _pageCount),
+            subtitleBuilder: (p) => _tocResult?.chapterTitleForPage(p),
+            onPageSelected: (target) {
+              _pageNumberNotifier.value = target;
+              _controller.jumpToPage(target);
+              _scheduleProgressSave();
+            },
           ),
-          Text('$_pageCount', style: Theme.of(context).textTheme.labelSmall),
-        ],
-      ),
+        );
+      },
     );
   }
 }
 
-/// Outline / Table of contents viewer for PDF bookmarks.
-class _OutlineSheet extends StatelessWidget {
+/// Outline / Table of contents viewer supporting embedded outlines,
+/// detected printed TOC pages, and detected chapter headings.
+class _OutlineSheet extends StatefulWidget {
   const _OutlineSheet({
-    required this.bookmarks,
+    required this.initialResult,
+    required this.pendingFuture,
+    required this.currentPage,
     required this.onSelect,
   });
 
-  final PdfBookmarkBase bookmarks;
-  final ValueChanged<PdfBookmark> onSelect;
+  final PdfTocResult? initialResult;
+  final Future<PdfTocResult>? pendingFuture;
+  final int currentPage;
+  final ValueChanged<PdfTocEntry> onSelect;
+
+  @override
+  State<_OutlineSheet> createState() => _OutlineSheetState();
+}
+
+class _OutlineSheetState extends State<_OutlineSheet> {
+  final TextEditingController _filterController = TextEditingController();
+  final Set<String> _expandedKeys = <String>{};
+  PdfTocResult? _result;
+  String _filterQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _result = widget.initialResult;
+    if (_result != null) {
+      _expandBranchContainingCurrentPage();
+    } else if (widget.pendingFuture != null) {
+      widget.pendingFuture!.then((resolved) {
+        if (!mounted) return;
+        setState(() {
+          _result = resolved;
+          _expandBranchContainingCurrentPage();
+        });
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _filterController.dispose();
+    super.dispose();
+  }
+
+  void _expandBranchContainingCurrentPage() {
+    final res = _result;
+    if (res == null || res.entries.isEmpty) return;
+
+    String? findPath(List<PdfTocEntry> list, String prefix) {
+      String? bestPath;
+      int bestPage = -1;
+      for (int i = 0; i < list.length; i++) {
+        final item = list[i];
+        final key = '$prefix.$i';
+        final p = item.pageNumber;
+        if (p != null && p <= widget.currentPage && p >= bestPage) {
+          bestPage = p;
+          bestPath = key;
+        }
+        if (item.children.isNotEmpty) {
+          final childMatch = findPath(item.children, key);
+          if (childMatch != null) {
+            bestPath = childMatch;
+          }
+        }
+      }
+      return bestPath;
+    }
+
+    final matchPath = findPath(res.entries, 'r');
+    if (matchPath != null) {
+      final parts = matchPath.split('.');
+      for (int i = 2; i <= parts.length; i++) {
+        _expandedKeys.add(parts.sublist(0, i).join('.'));
+      }
+    }
+  }
+
+  PdfTocEntry? _findActiveEntry(PdfTocResult? res) {
+    if (res == null) return null;
+    PdfTocEntry? best;
+    int bestPage = -1;
+    int bestDepth = -1;
+    for (final entry in res.flattened) {
+      final p = entry.pageNumber;
+      if (p == null || p > widget.currentPage) continue;
+      if (p > bestPage || (p == bestPage && entry.level >= bestDepth)) {
+        bestPage = p;
+        bestDepth = entry.level;
+        best = entry;
+      }
+    }
+    return best;
+  }
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
+    final scheme = Theme.of(context).colorScheme;
+    final res = _result;
+    final activeEntry = _findActiveEntry(res);
+    final flattened = res?.flattened ?? const <PdfTocEntry>[];
+    final showSearch = flattened.length > 8;
+    final filtered = _filterQuery.isEmpty
+        ? const <PdfTocEntry>[]
+        : flattened
+            .where((e) => EncodingUtils.searchMatches(e.title, _filterQuery))
+            .toList();
+
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-            child: Row(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.62,
+          minChildSize: 0.36,
+          maxChildSize: 0.92,
+          builder: (context, scrollController) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.menu_book_rounded, size: 20),
-                const SizedBox(width: 10),
-                Text(l10n.tableOfContents, style: Theme.of(context).textTheme.titleMedium),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 16, 10),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.menu_book_rounded, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          l10n.tableOfContents,
+                          style: Theme.of(context).textTheme.titleMedium,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (res != null &&
+                          res.isNotEmpty &&
+                          res.source != null &&
+                          res.source != PdfTocSource.embeddedBookmarks)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: scheme.secondaryContainer,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: Text(
+                            l10n.detectedChapters,
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w600,
+                              color: scheme.onSecondaryContainer,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                if (showSearch)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                    child: TextField(
+                      controller: _filterController,
+                      decoration: InputDecoration(
+                        hintText: l10n.filterChaptersHint,
+                        prefixIcon: const Icon(Icons.search_rounded, size: 19),
+                        suffixIcon: _filterQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear_rounded, size: 18),
+                                onPressed: () => setState(() {
+                                  _filterQuery = '';
+                                  _filterController.clear();
+                                }),
+                              )
+                            : null,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 9,
+                        ),
+                      ),
+                      onChanged: (val) =>
+                          setState(() => _filterQuery = val.trim()),
+                    ),
+                  ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _buildBody(
+                    context,
+                    l10n,
+                    scheme,
+                    res,
+                    activeEntry,
+                    filtered,
+                    scrollController,
+                  ),
+                ),
               ],
-            ),
-          ),
-          const Divider(height: 1),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: bookmarks.count,
-              itemBuilder: (context, index) {
-                final bm = bookmarks[index];
-                return _buildTile(context, bm, 0);
-              },
-            ),
-          ),
-        ],
+            );
+          },
+        ),
       ),
     );
   }
 
-  Widget _buildTile(BuildContext context, PdfBookmark bm, int depth) {
-    final cleanTitle = EncodingUtils.cleanDisplayName(bm.title);
-    if (bm.count > 0) {
-      return ExpansionTile(
-        tilePadding: EdgeInsetsDirectional.only(start: 16.0 + depth * 16.0, end: 16),
-        title: Text(cleanTitle, style: const TextStyle(fontSize: 14)),
-        children: [
-          for (int i = 0; i < bm.count; i++)
-            _buildTile(context, bm[i], depth + 1),
-        ],
+  Widget _buildBody(
+    BuildContext context,
+    AppLocalizations l10n,
+    ColorScheme scheme,
+    PdfTocResult? res,
+    PdfTocEntry? activeEntry,
+    List<PdfTocEntry> filtered,
+    ScrollController scrollController,
+  ) {
+    if (res == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 14),
+              Text(
+                l10n.scanningChapters,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ),
+        ),
       );
     }
-    return ListTile(
-      contentPadding: EdgeInsetsDirectional.only(start: 16.0 + depth * 16.0, end: 16),
-      title: Text(cleanTitle, style: const TextStyle(fontSize: 14)),
-      trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 13),
-      onTap: () {
-        Navigator.of(context).pop();
-        onSelect(bm);
+
+    if (res.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.menu_book_outlined,
+                size: 42,
+                color: scheme.outline,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                l10n.noTableOfContents,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_filterQuery.isNotEmpty) {
+      if (filtered.isEmpty) {
+        return Center(
+          child: Text(
+            l10n.noResults,
+            style: TextStyle(color: scheme.onSurfaceVariant),
+          ),
+        );
+      }
+      return ListView.builder(
+        controller: scrollController,
+        itemCount: filtered.length,
+        itemBuilder: (context, idx) {
+          final entry = filtered[idx];
+          return _buildEntryRow(
+            context,
+            scheme,
+            entry,
+            activeEntry: activeEntry,
+            depth: entry.level,
+            nodeKey: 'f_$idx',
+            hasChildren: false,
+          );
+        },
+      );
+    }
+
+    return ListView.builder(
+      controller: scrollController,
+      itemCount: res.entries.length,
+      itemBuilder: (context, index) {
+        return _buildTreeBranch(
+          context,
+          scheme,
+          res.entries[index],
+          activeEntry: activeEntry,
+          depth: 0,
+          nodeKey: 'r.$index',
+        );
       },
+    );
+  }
+
+  Widget _buildTreeBranch(
+    BuildContext context,
+    ColorScheme scheme,
+    PdfTocEntry entry, {
+    required PdfTocEntry? activeEntry,
+    required int depth,
+    required String nodeKey,
+  }) {
+    final hasChildren = entry.children.isNotEmpty;
+    final isExpanded = _expandedKeys.contains(nodeKey);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _buildEntryRow(
+          context,
+          scheme,
+          entry,
+          activeEntry: activeEntry,
+          depth: depth,
+          nodeKey: nodeKey,
+          hasChildren: hasChildren,
+          isExpanded: isExpanded,
+        ),
+        if (hasChildren && isExpanded)
+          for (int i = 0; i < entry.children.length; i++)
+            _buildTreeBranch(
+              context,
+              scheme,
+              entry.children[i],
+              activeEntry: activeEntry,
+              depth: depth + 1,
+              nodeKey: '$nodeKey.$i',
+            ),
+      ],
+    );
+  }
+
+  Widget _buildEntryRow(
+    BuildContext context,
+    ColorScheme scheme,
+    PdfTocEntry entry, {
+    required PdfTocEntry? activeEntry,
+    required int depth,
+    required String nodeKey,
+    required bool hasChildren,
+    bool isExpanded = false,
+  }) {
+    final isActive = identical(entry, activeEntry);
+    final canNavigate = entry.pageNumber != null || entry.bookmark != null;
+    final isRtl = Directionality.of(context) == TextDirection.rtl;
+
+    return InkWell(
+      onTap: canNavigate
+          ? () {
+              Navigator.of(context).pop();
+              widget.onSelect(entry);
+            }
+          : null,
+      child: Container(
+        color: isActive
+            ? scheme.primaryContainer.withValues(alpha: 0.35)
+            : Colors.transparent,
+        padding: EdgeInsetsDirectional.fromSTEB(
+          16.0 + (depth * 16.0),
+          10,
+          12,
+          10,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                entry.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: depth == 0 ? 14.5 : 13.5,
+                  fontWeight: isActive || depth == 0
+                      ? FontWeight.w600
+                      : FontWeight.normal,
+                  color: isActive ? scheme.primary : scheme.onSurface,
+                ),
+              ),
+            ),
+            if (entry.pageNumber != null) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isActive
+                      ? scheme.primary
+                      : scheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${entry.pageNumber}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: isActive
+                        ? scheme.onPrimary
+                        : scheme.onSurfaceVariant,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+            ],
+            if (hasChildren)
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints.tightFor(width: 34, height: 34),
+                icon: isExpanded
+                    ? Icon(
+                        Icons.expand_more_rounded,
+                        size: 20,
+                        color: scheme.onSurfaceVariant,
+                      )
+                    : Transform.flip(
+                        flipX: isRtl,
+                        child: Icon(
+                          Icons.chevron_right_rounded,
+                          size: 20,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                onPressed: () {
+                  setState(() {
+                    if (isExpanded) {
+                      _expandedKeys.remove(nodeKey);
+                    } else {
+                      _expandedKeys.add(nodeKey);
+                    }
+                  });
+                },
+              )
+            else
+              const SizedBox(width: 6),
+          ],
+        ),
+      ),
     );
   }
 }

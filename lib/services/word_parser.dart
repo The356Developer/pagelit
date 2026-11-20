@@ -1,5 +1,7 @@
 import 'dart:typed_data';
+
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:flutter/material.dart' show TextAlign;
 import 'package:xml/xml.dart';
 import 'encoding_utils.dart';
@@ -94,7 +96,16 @@ class WordDocument {
 class WordParser {
   const WordParser._();
 
+  static const int _isolateThresholdBytes = 32 * 1024;
+
   static Future<WordDocument> parse(Uint8List bytes) async {
+    if (!kIsWeb && bytes.length >= _isolateThresholdBytes) {
+      return compute(parseSync, bytes);
+    }
+    return parseSync(bytes);
+  }
+
+  static WordDocument parseSync(Uint8List bytes) {
     final archive = ZipDecoder().decodeBytes(bytes);
 
     final relsFile = archive.findFile('word/_rels/document.xml.rels');

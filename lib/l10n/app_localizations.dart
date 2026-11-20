@@ -138,23 +138,6 @@ abstract class AppLocalizations {
   String get clearRecentsConfirmContent;
   String get recentsClearedSnackbar;
 
-  // Premium Section
-  String get premium;
-  String get removeAds;
-  String get premiumActiveSubtitle;
-  String get oneTimePurchase;
-  String oneTimePurchaseWithPrice(String price);
-  String get restorePurchases;
-  String get simulatePremium;
-  String get simulatePremiumSubtitle;
-  String get playBillingUnavailableTitle;
-  String get playBillingUnavailableContent;
-  String get activatePremium;
-  String get premiumActivatedSnackbar;
-  String get noPreviousPurchase;
-  String get billingConnectError;
-  String get billingPurchaseError;
-
   // About Section
   String get about;
   String get version;
@@ -274,6 +257,18 @@ abstract class AppLocalizations {
   String get stepTheme;
   String get stepLanguage;
   String get previous;
+
+  // Navigation, Chapters & Slideshow Controls
+  String get pause;
+  String get replayAnimation;
+  String get scanningChapters;
+  String get detectedChapters;
+  String get filterChaptersHint;
+  String get previousPage;
+  String get nextPage;
+  String pageNumberLabel(int page, int total);
+  String get rotateScreen;
+  String stepXOfY(int step, int total);
 }
 
 class _AppLocalizationsDelegate
@@ -541,41 +536,6 @@ class _AppLocalizationsEn extends AppLocalizations {
   String get recentsClearedSnackbar => "Recents, cache, and progress cleared";
 
   @override
-  String get premium => "PREMIUM";
-  @override
-  String get removeAds => "Remove ads";
-  @override
-  String get premiumActiveSubtitle => "Thank you! Ads are off everywhere.";
-  @override
-  String get oneTimePurchase => "One-time purchase";
-  @override
-  String oneTimePurchaseWithPrice(String price) => "One-time purchase · $price";
-  @override
-  String get restorePurchases => "Restore purchases";
-  @override
-  String get simulatePremium => "Simulate premium (test mode)";
-  @override
-  String get simulatePremiumSubtitle =>
-      "Enable ad-free mode for testing (persists on this device)";
-  @override
-  String get playBillingUnavailableTitle => "Play Billing Unavailable";
-  @override
-  String get playBillingUnavailableContent =>
-      "Google Play Billing could not find the in-app product \"remove_ads\".\n\nThis is normal during local development or before the product is published on Google Play.\n\nWould you like to activate Premium in test mode now?";
-  @override
-  String get activatePremium => "Activate Premium";
-  @override
-  String get premiumActivatedSnackbar => "Premium activated! Ads are removed.";
-  @override
-  String get noPreviousPurchase => "No previous purchase found.";
-  @override
-  String get billingConnectError =>
-      "Unable to connect to Google Play. Please check your internet connection and Google Play Services.";
-  @override
-  String get billingPurchaseError =>
-      "Could not start the purchase. Please try again.";
-
-  @override
   String get about => "ABOUT";
   @override
   String get version => "Version";
@@ -810,6 +770,27 @@ class _AppLocalizationsEn extends AppLocalizations {
   String get stepLanguage => "Language";
   @override
   String get previous => "Back";
+
+  @override
+  String get pause => "Pause";
+  @override
+  String get replayAnimation => "Replay animation";
+  @override
+  String get scanningChapters => "Detecting chapters…";
+  @override
+  String get detectedChapters => "Auto-detected chapters";
+  @override
+  String get filterChaptersHint => "Filter chapters…";
+  @override
+  String get previousPage => "Previous page";
+  @override
+  String get nextPage => "Next page";
+  @override
+  String pageNumberLabel(int page, int total) => "Page $page / $total";
+  @override
+  String get rotateScreen => "Rotate screen";
+  @override
+  String stepXOfY(int step, int total) => "Step $step/$total";
 }
 
 // -----------------------------------------------------------------------------
@@ -1047,44 +1028,6 @@ class _AppLocalizationsFr extends AppLocalizations {
       "Cela supprime votre liste de fichiers récents, les documents en cache et toutes les positions de lecture enregistrées. Vos documents d'origine ne sont pas supprimés.";
   @override
   String get recentsClearedSnackbar => "Récents, cache et progression effacés";
-
-  @override
-  String get premium => "VERSION SANS PUBLICITÉ";
-  @override
-  String get removeAds => "Supprimer les publicités";
-  @override
-  String get premiumActiveSubtitle =>
-      "Merci ! Les publicités sont désactivées partout.";
-  @override
-  String get oneTimePurchase => "Achat unique";
-  @override
-  String oneTimePurchaseWithPrice(String price) => "Achat unique · $price";
-  @override
-  String get restorePurchases => "Restaurer les achats";
-  @override
-  String get simulatePremium => "Simuler la version sans publicité (test)";
-  @override
-  String get simulatePremiumSubtitle =>
-      "Activer le mode sans publicité pour les tests locaux";
-  @override
-  String get playBillingUnavailableTitle =>
-      "Facturation Google Play indisponible";
-  @override
-  String get playBillingUnavailableContent =>
-      "Le service Google Play n'a pas pu trouver le produit « remove_ads ».\n\nCela est normal en mode de test local ou avant la publication officielle.\n\nSouhaitez-vous activer la version sans publicité en mode test dès maintenant ?";
-  @override
-  String get activatePremium => "Activer la version sans publicité";
-  @override
-  String get premiumActivatedSnackbar =>
-      "Version sans publicité activée ! Les annonces sont supprimées.";
-  @override
-  String get noPreviousPurchase => "Aucun achat précédent trouvé sur ce compte.";
-  @override
-  String get billingConnectError =>
-      "Impossible de se connecter à Google Play. Veuillez vérifier votre connexion internet et les services Google Play.";
-  @override
-  String get billingPurchaseError =>
-      "Impossible de lancer l'achat. Veuillez réessayer ultérieurement.";
 
   @override
   String get about => "À PROPOS";
@@ -1333,6 +1276,27 @@ class _AppLocalizationsFr extends AppLocalizations {
   String get stepLanguage => "Langue";
   @override
   String get previous => "Précédent";
+
+  @override
+  String get pause => "Pause";
+  @override
+  String get replayAnimation => "Rejouer l'animation";
+  @override
+  String get scanningChapters => "Détection des chapitres…";
+  @override
+  String get detectedChapters => "Chapitres détectés automatiquement";
+  @override
+  String get filterChaptersHint => "Filtrer les chapitres…";
+  @override
+  String get previousPage => "Page précédente";
+  @override
+  String get nextPage => "Page suivante";
+  @override
+  String pageNumberLabel(int page, int total) => "Page $page / $total";
+  @override
+  String get rotateScreen => "Pivoter l'écran";
+  @override
+  String stepXOfY(int step, int total) => "Étape $step/$total";
 }
 
 // -----------------------------------------------------------------------------
@@ -1573,42 +1537,6 @@ class _AppLocalizationsAr extends AppLocalizations {
       "تم مسح الملفات الأخيرة وذاكرة التخزين وسجل القراءة";
 
   @override
-  String get premium => "النسخة المميزة (بدون إعلانات)";
-  @override
-  String get removeAds => "إزالة الإعلانات";
-  @override
-  String get premiumActiveSubtitle => "شكراً لك! تم إيقاف الإعلانات بالكامل.";
-  @override
-  String get oneTimePurchase => "شراء لمرة واحدة";
-  @override
-  String oneTimePurchaseWithPrice(String price) => "شراء لمرة واحدة · $price";
-  @override
-  String get restorePurchases => "استعادة المشتريات السابقة";
-  @override
-  String get simulatePremium => "تجربة النسخة المميزة (وضع الاختبار)";
-  @override
-  String get simulatePremiumSubtitle =>
-      "تفعيل الوضع الخالي من الإعلانات لأغراض الاختبار والتطوير";
-  @override
-  String get playBillingUnavailableTitle => "خدمة الدفع عبر Google Play غير متوفرة";
-  @override
-  String get playBillingUnavailableContent =>
-      "تعذر على خدمة Google Play العثور على منتج إزالة الإعلانات.\n\nهذا أمر طبيعي أثناء الاختبار والتطوير المحلي.\n\nهل ترغب في تفعيل النسخة المميزة في وضع الاختبار الآن؟";
-  @override
-  String get activatePremium => "تفعيل النسخة المميزة";
-  @override
-  String get premiumActivatedSnackbar =>
-      "تم تفعيل النسخة المميزة! تمت إزالة الإعلانات.";
-  @override
-  String get noPreviousPurchase => "لم يتم العثور على أي مشتريات سابقة.";
-  @override
-  String get billingConnectError =>
-      "تعذر الاتصال بـ Google Play. يرجى التحقق من اتصالك بالإنترنت وخدمات Google Play.";
-  @override
-  String get billingPurchaseError =>
-      "تعذر إتمام عملية الشراء في الوقت الحالي. يرجى المحاولة لاحقاً.";
-
-  @override
   String get about => "حول التطبيق";
   @override
   String get version => "رقم الإصدار";
@@ -1842,4 +1770,25 @@ class _AppLocalizationsAr extends AppLocalizations {
   String get stepLanguage => "اللغة";
   @override
   String get previous => "السابق";
+
+  @override
+  String get pause => "إيقاف مؤقت";
+  @override
+  String get replayAnimation => "إعادة تشغيل الحركة";
+  @override
+  String get scanningChapters => "جارٍ اكتشاف الفصول…";
+  @override
+  String get detectedChapters => "فصول مكتشفة تلقائياً";
+  @override
+  String get filterChaptersHint => "تصفية الفصول…";
+  @override
+  String get previousPage => "الصفحة السابقة";
+  @override
+  String get nextPage => "الصفحة التالية";
+  @override
+  String pageNumberLabel(int page, int total) => "صفحة $page / $total";
+  @override
+  String get rotateScreen => "تدوير الشاشة";
+  @override
+  String stepXOfY(int step, int total) => "الخطوة $step/$total";
 }

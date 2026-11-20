@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -8,7 +7,6 @@ import 'package:url_launcher/url_launcher.dart';
 import '../l10n/app_localizations.dart';
 import '../services/device_pdfs.dart';
 import '../services/locale_prefs.dart';
-import '../services/premium_service.dart';
 import '../services/reading_prefs.dart';
 import '../services/reading_progress.dart';
 import '../services/recent_files.dart';
@@ -398,7 +396,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          const _PremiumSection(),
           const _AboutSection(),
         ],
       ),
@@ -484,166 +481,6 @@ class _ChoiceRow<T> extends StatelessWidget {
           ),
         );
       },
-    );
-  }
-}
-
-/// "Remove ads" — a one-time Play Billing purchase (see PremiumService).
-class _PremiumSection extends StatefulWidget {
-  const _PremiumSection();
-
-  @override
-  State<_PremiumSection> createState() => _PremiumSectionState();
-}
-
-class _PremiumSectionState extends State<_PremiumSection> {
-  @override
-  void initState() {
-    super.initState();
-    PremiumService.lastError.addListener(_onError);
-  }
-
-  @override
-  void dispose() {
-    PremiumService.lastError.removeListener(_onError);
-    super.dispose();
-  }
-
-  void _onError() {
-    final message = PremiumService.lastError.value;
-    PremiumService.lastError.value = null;
-    if (message == null || !mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  Future<void> _buy() async {
-    final l10n = context.l10n;
-    final started = await PremiumService.buy();
-    if (started || !mounted) return;
-
-    if (kDebugMode && !PremiumService.isPremium.value) {
-      final shouldSimulate = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text(l10n.playBillingUnavailableTitle),
-          content: Text(l10n.playBillingUnavailableContent),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: Text(l10n.cancel),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: Text(l10n.activatePremium),
-            ),
-          ],
-        ),
-      );
-      if (shouldSimulate == true && mounted) {
-        await PremiumService.grantPremium(persist: true);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.premiumActivatedSnackbar)),
-          );
-        }
-      }
-      return;
-    }
-
-    final errorMessage = PremiumService.lastError.value ??
-        (PremiumService.priceLabel.value == null
-            ? l10n.billingConnectError
-            : l10n.billingPurchaseError);
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(errorMessage)),
-    );
-  }
-
-  Future<void> _restore() async {
-    final l10n = context.l10n;
-    final outcome = await PremiumService.restore();
-    if (!mounted) return;
-    if (outcome == RestoreOutcome.notFound) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.noPreviousPurchase)),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final colorScheme = Theme.of(context).colorScheme;
-    return _Section(
-      label: l10n.premium,
-      child: ValueListenableBuilder<bool>(
-        valueListenable: PremiumService.isPremium,
-        builder: (context, premium, _) => Column(
-          children: [
-            ValueListenableBuilder<bool>(
-              valueListenable: PremiumService.isBuying,
-              builder: (context, buying, _) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(
-                  premium
-                      ? Icons.verified_outlined
-                      : Icons.workspace_premium_outlined,
-                  color: colorScheme.primary,
-                ),
-                title: Text(l10n.removeAds),
-                subtitle: premium
-                    ? Text(l10n.premiumActiveSubtitle)
-                    : ValueListenableBuilder<String?>(
-                        valueListenable: PremiumService.priceLabel,
-                        builder: (context, price, _) => Text(
-                          price == null
-                              ? l10n.oneTimePurchase
-                              : l10n.oneTimePurchaseWithPrice(price),
-                        ),
-                      ),
-                trailing: premium
-                    ? Icon(Icons.check_circle_rounded, color: colorScheme.primary)
-                    : buying
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2.5),
-                      )
-                    : Icon(
-                        Icons.chevron_right_rounded,
-                        color: colorScheme.outline,
-                      ),
-                onTap: premium || buying ? null : _buy,
-              ),
-            ),
-            if (!premium)
-              Align(
-                alignment: AlignmentDirectional.centerEnd,
-                child: ValueListenableBuilder<bool>(
-                  valueListenable: PremiumService.isBuying,
-                  builder: (context, buying, _) => TextButton(
-                    onPressed: buying ? null : _restore,
-                    child: Text(l10n.restorePurchases),
-                  ),
-                ),
-              ),
-            if (kDebugMode) ...[
-              const Divider(height: 28),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                title: Text(l10n.simulatePremium),
-                subtitle: Text(l10n.simulatePremiumSubtitle),
-                value: premium,
-                onChanged: PremiumService.debugSetPremium,
-              ),
-            ],
-          ],
-        ),
-      ),
     );
   }
 }

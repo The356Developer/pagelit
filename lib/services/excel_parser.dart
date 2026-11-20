@@ -1,5 +1,7 @@
 import 'dart:typed_data';
+
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show compute, kIsWeb;
 import 'package:xml/xml.dart';
 import 'encoding_utils.dart';
 
@@ -52,7 +54,16 @@ class ExcelParser {
     return index - 1;
   }
 
+  static const int _isolateThresholdBytes = 32 * 1024;
+
   static Future<ExcelWorkbook> parse(Uint8List bytes) async {
+    if (!kIsWeb && bytes.length >= _isolateThresholdBytes) {
+      return compute(parseSync, bytes);
+    }
+    return parseSync(bytes);
+  }
+
+  static ExcelWorkbook parseSync(Uint8List bytes) {
     final archive = ZipDecoder().decodeBytes(bytes);
     final sharedStrings = <String>[];
 

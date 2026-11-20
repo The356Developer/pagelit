@@ -5,7 +5,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../ads/ad_banner.dart';
 import '../l10n/app_localizations.dart';
 import '../services/device_pdfs.dart';
 import '../services/encoding_utils.dart';
@@ -517,12 +516,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           _OpenDock(onOpen: _pickFile),
         ],
       ),
-      bottomNavigationBar: const SafeArea(
-        top: false,
-        left: false,
-        right: false,
-        child: AdBanner(),
-      ),
     );
   }
 
@@ -930,16 +923,21 @@ class _OpenDock extends StatelessWidget {
         decoration: BoxDecoration(
           border: Border(top: BorderSide(color: scheme.outlineVariant)),
         ),
-        padding: const EdgeInsets.fromLTRB(
-          AppShape.gutter,
-          12,
-          AppShape.gutter,
-          12,
-        ),
-        child: FilledButton.icon(
-          onPressed: onOpen,
-          icon: const Icon(Icons.folder_open_rounded, size: 20),
-          label: Text(l10n.openPdf),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppShape.gutter,
+              12,
+              AppShape.gutter,
+              12,
+            ),
+            child: FilledButton.icon(
+              onPressed: onOpen,
+              icon: const Icon(Icons.folder_open_rounded, size: 20),
+              label: Text(l10n.openPdf),
+            ),
+          ),
         ),
       ),
     );

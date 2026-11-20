@@ -66,6 +66,16 @@ void main() {
       expect(l10n.precisionHighlightHint, contains('precision handles'));
       expect(l10n.geminiOpeningInBrowser, contains('Opening Gemini'));
       expect(l10n.getGeminiApp, 'Get App');
+      expect(l10n.pause, 'Pause');
+      expect(l10n.replayAnimation, 'Replay animation');
+      expect(l10n.scanningChapters, 'Detecting chapters…');
+      expect(l10n.detectedChapters, 'Auto-detected chapters');
+      expect(l10n.filterChaptersHint, 'Filter chapters…');
+      expect(l10n.previousPage, 'Previous page');
+      expect(l10n.nextPage, 'Next page');
+      expect(l10n.pageNumberLabel(3, 10), 'Page 3 / 10');
+      expect(l10n.rotateScreen, 'Rotate screen');
+      expect(l10n.stepXOfY(1, 4), 'Step 1/4');
     });
 
     test('French translations are complete and accurate', () async {
@@ -78,12 +88,21 @@ void main() {
       expect(l10n.searchDocuments, 'Rechercher des documents');
       expect(l10n.onThisDevice, 'SUR CET APPAREIL');
       expect(l10n.recentFiles, 'FICHIERS RÉCENTS');
-      expect(l10n.removeAds, 'Supprimer les publicités');
       expect(l10n.tableOfContents, 'Table des matières');
       expect(l10n.copiedToClipboard, 'Copié dans le presse-papiers');
       expect(l10n.precisionHighlightHint, contains('poignées'));
       expect(l10n.geminiOpeningInBrowser, contains('navigateur'));
       expect(l10n.getGeminiApp, "Obtenir l'app");
+      expect(l10n.pause, 'Pause');
+      expect(l10n.replayAnimation, "Rejouer l'animation");
+      expect(l10n.scanningChapters, 'Détection des chapitres…');
+      expect(l10n.detectedChapters, 'Chapitres détectés automatiquement');
+      expect(l10n.filterChaptersHint, 'Filtrer les chapitres…');
+      expect(l10n.previousPage, 'Page précédente');
+      expect(l10n.nextPage, 'Page suivante');
+      expect(l10n.pageNumberLabel(3, 10), 'Page 3 / 10');
+      expect(l10n.rotateScreen, "Pivoter l'écran");
+      expect(l10n.stepXOfY(1, 4), 'Étape 1/4');
     });
 
     test('Arabic translations are complete and accurate', () async {
@@ -96,12 +115,21 @@ void main() {
       expect(l10n.searchDocuments, 'بحث في المستندات');
       expect(l10n.onThisDevice, 'على هذا الجهاز');
       expect(l10n.recentFiles, 'الملفات الأخيرة');
-      expect(l10n.removeAds, 'إزالة الإعلانات');
       expect(l10n.tableOfContents, 'جدول المحتويات');
       expect(l10n.copiedToClipboard, 'تم النسخ إلى الحافظة');
       expect(l10n.precisionHighlightHint, contains('المقابض'));
       expect(l10n.geminiOpeningInBrowser, contains('Gemini'));
       expect(l10n.getGeminiApp, 'تثبيت التطبيق');
+      expect(l10n.pause, 'إيقاف مؤقت');
+      expect(l10n.replayAnimation, 'إعادة تشغيل الحركة');
+      expect(l10n.scanningChapters, 'جارٍ اكتشاف الفصول…');
+      expect(l10n.detectedChapters, 'فصول مكتشفة تلقائياً');
+      expect(l10n.filterChaptersHint, 'تصفية الفصول…');
+      expect(l10n.previousPage, 'الصفحة السابقة');
+      expect(l10n.nextPage, 'الصفحة التالية');
+      expect(l10n.pageNumberLabel(3, 10), 'صفحة 3 / 10');
+      expect(l10n.rotateScreen, 'تدوير الشاشة');
+      expect(l10n.stepXOfY(1, 4), 'الخطوة 1/4');
     });
   });
 

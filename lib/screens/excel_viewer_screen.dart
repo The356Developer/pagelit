@@ -362,7 +362,8 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
     final rowCount = sheet.maxRow.clamp(1, 2000);
     final colCount = sheet.maxCol.clamp(1, 100);
 
-    final Map<int, TableColumnWidth> colWidths = {0: const FixedColumnWidth(48)};
+    const double rowNumWidth = 48.0;
+    final colWidths = <double>[];
     for (int c = 0; c < colCount; c++) {
       int maxLen = _colIndexToLetters(c).length;
       final checkRows = rowCount.clamp(0, 30);
@@ -370,82 +371,124 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
         final len = sheet.cell(r, c)?.value.length ?? 0;
         if (len > maxLen) maxLen = len;
       }
-      final width = (maxLen * 8.5 + 28.0).clamp(72.0, 240.0);
-      colWidths[c + 1] = FixedColumnWidth(width);
+      colWidths.add((maxLen * 8.5 + 28.0).clamp(72.0, 240.0));
     }
+    final totalWidth =
+        rowNumWidth + colWidths.fold<double>(0.0, (sum, w) => sum + w);
+    final borderSide = BorderSide(
+      color: scheme.outlineVariant.withValues(alpha: 0.7),
+      width: 0.8,
+    );
 
     return RepaintBoundary(
       key: _sheetTableKey,
-      child: InteractiveViewer(
-        constrained: false,
-        boundaryMargin: const EdgeInsets.all(200),
-        minScale: 0.5,
-        maxScale: 2.5,
-        child: Table(
-          defaultColumnWidth: const FixedColumnWidth(110),
-          columnWidths: colWidths,
-          border: TableBorder.all(
-            color: scheme.outlineVariant.withValues(alpha: 0.7),
-            width: 0.8,
-          ),
-          children: [
-            // Header Row: A, B, C...
-            TableRow(
-              decoration: BoxDecoration(color: scheme.surfaceContainerHigh),
-              children: [
-                Container(
-                  alignment: Alignment.center,
-                  height: 32,
-                  child: Text(
-                    '#',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                      color: scheme.primary,
-                    ),
-                  ),
-                ),
-                for (int c = 0; c < colCount; c++)
-                  Container(
-                    alignment: Alignment.center,
-                    height: 32,
-                    child: Text(
-                      _colIndexToLetters(c),
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                        color: scheme.onSurface,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-            // Data Rows
-            for (int r = 0; r < rowCount; r++)
-              TableRow(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: totalWidth,
+          child: Column(
+            children: [
+              // Sticky Header Row: #, A, B, C...
+              Container(
+                height: 32,
                 decoration: BoxDecoration(
-                  color: r.isEven ? scheme.surface : scheme.surfaceContainerLowest,
+                  color: scheme.surfaceContainerHigh,
+                  border: Border(top: borderSide, bottom: borderSide),
                 ),
-                children: [
-                  // Row Header
-                  Container(
-                    alignment: Alignment.center,
-                    height: 36,
-                    color: scheme.surfaceContainerHigh.withValues(alpha: 0.7),
-                    child: Text(
-                      '${r + 1}',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: scheme.onSurfaceVariant,
+                child: Row(
+                  children: [
+                    Container(
+                      width: rowNumWidth,
+                      height: 32,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        border: BorderDirectional(
+                          start: borderSide,
+                          end: borderSide,
+                        ),
+                      ),
+                      child: Text(
+                        '#',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                          color: scheme.primary,
+                        ),
                       ),
                     ),
-                  ),
-                  // Cells
-                  for (int c = 0; c < colCount; c++) _buildCellWidget(sheet, r, c),
-                ],
+                    for (int c = 0; c < colCount; c++)
+                      Container(
+                        width: colWidths[c],
+                        height: 32,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          border: BorderDirectional(end: borderSide),
+                        ),
+                        child: Text(
+                          _colIndexToLetters(c),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            color: scheme.onSurface,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
-          ],
+              // Virtualized Data Rows
+              Expanded(
+                child: ListView.builder(
+                  itemExtent: 36.0,
+                  itemCount: rowCount,
+                  itemBuilder: (context, r) {
+                    return Container(
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: r.isEven
+                            ? scheme.surface
+                            : scheme.surfaceContainerLowest,
+                        border: Border(bottom: borderSide),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: rowNumWidth,
+                            height: 36,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHigh
+                                  .withValues(alpha: 0.7),
+                              border: BorderDirectional(
+                                start: borderSide,
+                                end: borderSide,
+                              ),
+                            ),
+                            child: Text(
+                              '${r + 1}',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          for (int c = 0; c < colCount; c++)
+                            _buildCellWidget(
+                              sheet,
+                              r,
+                              c,
+                              width: colWidths[c],
+                              borderSide: borderSide,
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -457,7 +500,13 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
     return double.tryParse(cleaned) != null;
   }
 
-  Widget _buildCellWidget(ExcelSheet sheet, int r, int c) {
+  Widget _buildCellWidget(
+    ExcelSheet sheet,
+    int r,
+    int c, {
+    required double width,
+    required BorderSide borderSide,
+  }) {
     final cell = sheet.cell(r, c);
     final val = cell?.value ?? '';
     final isSelected = _selectedCell != null && _selectedCell!.row == r && _selectedCell!.col == c;
@@ -478,9 +527,13 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
         setState(() => _selectedCell = cell ?? ExcelCell(row: r, col: c, coordinate: '${_colIndexToLetters(c)}${r + 1}', value: ''));
       },
       child: Container(
+        width: width,
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        color: bgColor,
+        decoration: BoxDecoration(
+          color: bgColor,
+          border: BorderDirectional(end: borderSide),
+        ),
         alignment: isNumeric
             ? AlignmentDirectional.centerEnd
             : AlignmentDirectional.centerStart,
