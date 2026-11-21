@@ -72,7 +72,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
   String? _password;
   PdfTocResult? _tocResult;
   Future<PdfTocResult>? _tocFuture;
-  Timer? _tocScanDelayTimer;
   bool _hasRestoredInitialPosition = false;
 
   /// Annotation currently selected in pan mode (offered for recolour/delete).
@@ -112,7 +111,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       canShowScrollStatus: false,
       canShowPaginationDialog: false,
       canShowTextSelectionMenu: false,
-      maxZoomLevel: 4.0,
+      enableDoubleTapZooming: true,
+      maxZoomLevel: 3.0,
       pageSpacing: 6,
       initialPageNumber: _pageNumberNotifier.value,
       onTextSelectionChanged: _onTextSelectionChanged,
@@ -130,9 +130,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
         if (!_hasRestoredInitialPosition) {
           _hasRestoredInitialPosition = true;
           _restorePosition();
-        }
-        if (tier1.isEmpty) {
-          _scheduleBackgroundTocScan();
         }
       },
       onDocumentLoadFailed: _handleLoadFailed,
@@ -166,21 +163,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (!mounted) return;
     setState(() {
       _initViewer();
-    });
-  }
-
-  void _scheduleBackgroundTocScan() {
-    _tocScanDelayTimer?.cancel();
-    _tocScanDelayTimer = Timer(const Duration(milliseconds: 350), () async {
-      if (!mounted || _tocResult != null || _tocFuture != null) return;
-      try {
-        final len = await File(widget.filePath).length();
-        if (len > 45 * 1024 * 1024) return;
-      } catch (_) {
-        return;
-      }
-      if (!mounted || _tocResult != null || _tocFuture != null) return;
-      _startBackgroundTocScan();
     });
   }
 
@@ -338,7 +320,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ReadingPrefs.keepScreenOn.removeListener(_applyKeepScreenOn);
     ReadingPrefs.layoutMode.removeListener(_onReadingPrefLayoutOrScrollChanged);
     ReadingPrefs.scrollDirection.removeListener(_onReadingPrefLayoutOrScrollChanged);
-    _tocScanDelayTimer?.cancel();
     unawaited(WakelockPlus.disable());
     if (_immersive) {
       unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
@@ -929,18 +910,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
       appBar: _immersive
           ? null
           : AppBar(
-              title: Row(
-                children: [
-                  const PdfGlyph(size: 22),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      EncodingUtils.cleanDisplayName(widget.title),
+              titleSpacing: 0,
+              title: LayoutBuilder(
+                builder: (context, constraints) {
+                  final cleanTitle = EncodingUtils.cleanDisplayName(widget.title);
+                  if (constraints.maxWidth < 64) {
+                    return Text(
+                      cleanTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+                    );
+                  }
+                  return Row(
+                    children: [
+                      const PdfGlyph(size: 20),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          cleanTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
               actions: [
                 if (_pageCount > 0)
@@ -956,11 +950,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                 IconButton(
                   tooltip: l10n.tableOfContents,
+                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.menu_book_rounded),
                   onPressed: _isLoaded ? _openBookmarksSheet : null,
                 ),
                 IconButton(
                   tooltip: l10n.search,
+                  visualDensity: VisualDensity.compact,
                   icon: Icon(
                     _isSearchOpen
                         ? Icons.search_off_rounded
@@ -968,14 +964,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                   onPressed: _isLoaded ? _toggleSearch : null,
                 ),
-
                 IconButton(
                   tooltip: l10n.fullScreen,
+                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.fullscreen_rounded),
                   onPressed: _isLoaded ? _toggleImmersive : null,
                 ),
                 IconButton(
                   tooltip: l10n.askGemini,
+                  visualDensity: VisualDensity.compact,
                   icon: const Icon(Icons.auto_awesome_rounded),
                   color: Theme.of(context).colorScheme.primary,
                   onPressed: _isLoaded && !_isBusy ? _askGemini : null,
@@ -1557,40 +1554,53 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         horizontal: 10,
                         vertical: 4,
                       ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          toolButton(
-                            _Tool.pan,
-                            Icons.pan_tool_alt_rounded,
-                            l10n.toolReadPan,
-                          ),
-                          toolButton(
-                            _Tool.highlight,
-                            Icons.highlight_rounded,
-                            l10n.toolHighlight,
-                          ),
-                          toolButton(
-                            _Tool.underline,
-                            Icons.format_underlined_rounded,
-                            l10n.toolUnderline,
-                          ),
-                          toolButton(
-                            _Tool.strikethrough,
-                            Icons.format_strikethrough_rounded,
-                            l10n.toolStrikethrough,
-                          ),
-                          toolButton(
-                            _Tool.squiggly,
-                            Icons.waves_rounded,
-                            l10n.toolSquiggly,
-                          ),
-                          toolButton(
-                            _Tool.comment,
-                            Icons.sticky_note_2_rounded,
-                            l10n.toolComment,
-                          ),
-                        ],
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          return SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            physics: const BouncingScrollPhysics(),
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minWidth: constraints.maxWidth,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  toolButton(
+                                    _Tool.pan,
+                                    Icons.pan_tool_alt_rounded,
+                                    l10n.toolReadPan,
+                                  ),
+                                  toolButton(
+                                    _Tool.highlight,
+                                    Icons.highlight_rounded,
+                                    l10n.toolHighlight,
+                                  ),
+                                  toolButton(
+                                    _Tool.underline,
+                                    Icons.format_underlined_rounded,
+                                    l10n.toolUnderline,
+                                  ),
+                                  toolButton(
+                                    _Tool.strikethrough,
+                                    Icons.format_strikethrough_rounded,
+                                    l10n.toolStrikethrough,
+                                  ),
+                                  toolButton(
+                                    _Tool.squiggly,
+                                    Icons.waves_rounded,
+                                    l10n.toolSquiggly,
+                                  ),
+                                  toolButton(
+                                    _Tool.comment,
+                                    Icons.sticky_note_2_rounded,
+                                    l10n.toolComment,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                       ),
                     ),
                     Divider(

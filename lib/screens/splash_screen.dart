@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../services/onboarding_prefs.dart';
 import '../theme/app_theme.dart';
+import '../widgets/pagelit_logo.dart';
 import 'home_screen.dart';
 import 'onboarding_screen.dart';
 
@@ -133,45 +134,27 @@ class _SplashScreenState extends State<SplashScreen>
                         );
                       },
                       child: Container(
-                        width: 96,
-                        height: 96,
+                        width: 112,
+                        height: 112,
                         decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppPalette.signal.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(28),
                           boxShadow: [
                             BoxShadow(
-                              color: AppPalette.signal.withValues(alpha: isDark ? 0.25 : 0.18),
-                              blurRadius: 36,
-                              spreadRadius: 4,
+                              color: const Color(0xFF3E3DCD)
+                                  .withValues(alpha: isDark ? 0.34 : 0.22),
+                              blurRadius: 32,
+                              spreadRadius: 2,
+                              offset: const Offset(0, 8),
+                            ),
+                            BoxShadow(
+                              color: Colors.black
+                                  .withValues(alpha: isDark ? 0.30 : 0.10),
+                              blurRadius: 14,
+                              offset: const Offset(0, 6),
                             ),
                           ],
                         ),
-                        child: Center(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(22),
-                            child: Image.asset(
-                              'assets/logo/pagelit_icon512.png',
-                              width: 80,
-                              height: 80,
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) {
-                                return Container(
-                                  width: 80,
-                                  height: 80,
-                                  decoration: BoxDecoration(
-                                    color: AppPalette.signal,
-                                    borderRadius: BorderRadius.circular(22),
-                                  ),
-                                  child: const Icon(
-                                    Icons.auto_stories_rounded,
-                                    color: Colors.white,
-                                    size: 44,
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
+                        child: const PagelitLogo(size: 112, borderRadius: 28),
                       ),
                     ),
                     const SizedBox(height: 28),

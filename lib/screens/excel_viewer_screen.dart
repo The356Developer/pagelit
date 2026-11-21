@@ -25,8 +25,12 @@ class ExcelViewerScreen extends StatefulWidget {
 }
 
 class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
+  static final RegExp _numericStripRegex = RegExp(r'[\$,€,£,¥,%,\s]');
+
   final GlobalKey _sheetTableKey = GlobalKey();
   ExcelWorkbook? _workbook;
+  final Map<int, ({List<double> colWidths, double totalWidth})>
+      _sheetLayoutCache = {};
   int _activeSheetIndex = 0;
   bool _isLoading = true;
   bool _isSavingToGallery = false;
@@ -60,6 +64,7 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
       if (!mounted) return;
       setState(() {
         _workbook = wb;
+        _sheetLayoutCache.clear();
         _isLoading = false;
       });
     } catch (e) {
@@ -128,32 +133,45 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.green.shade700,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Text(
-                'XLSX',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                EncodingUtils.cleanDisplayName(widget.title),
+        titleSpacing: 0,
+        title: LayoutBuilder(
+          builder: (context, constraints) {
+            final cleanTitle = EncodingUtils.cleanDisplayName(widget.title);
+            if (constraints.maxWidth < 80) {
+              return Text(
+                cleanTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
+              );
+            }
+            return Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade700,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'XLSX',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    cleanTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            );
+          },
         ),
         actions: [
           IconButton(
@@ -363,18 +381,23 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
     final colCount = sheet.maxCol.clamp(1, 100);
 
     const double rowNumWidth = 48.0;
-    final colWidths = <double>[];
-    for (int c = 0; c < colCount; c++) {
-      int maxLen = _colIndexToLetters(c).length;
-      final checkRows = rowCount.clamp(0, 30);
-      for (int r = 0; r < checkRows; r++) {
-        final len = sheet.cell(r, c)?.value.length ?? 0;
-        if (len > maxLen) maxLen = len;
+    final cachedLayout = _sheetLayoutCache.putIfAbsent(_activeSheetIndex, () {
+      final widths = <double>[];
+      for (int c = 0; c < colCount; c++) {
+        int maxLen = _colIndexToLetters(c).length;
+        final checkRows = rowCount.clamp(0, 30);
+        for (int r = 0; r < checkRows; r++) {
+          final len = sheet.cell(r, c)?.value.length ?? 0;
+          if (len > maxLen) maxLen = len;
+        }
+        widths.add((maxLen * 8.5 + 28.0).clamp(72.0, 240.0));
       }
-      colWidths.add((maxLen * 8.5 + 28.0).clamp(72.0, 240.0));
-    }
-    final totalWidth =
-        rowNumWidth + colWidths.fold<double>(0.0, (sum, w) => sum + w);
+      final widthSum =
+          rowNumWidth + widths.fold<double>(0.0, (sum, w) => sum + w);
+      return (colWidths: widths, totalWidth: widthSum);
+    });
+    final colWidths = cachedLayout.colWidths;
+    final totalWidth = cachedLayout.totalWidth;
     final borderSide = BorderSide(
       color: scheme.outlineVariant.withValues(alpha: 0.7),
       width: 0.8,
@@ -440,6 +463,7 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
               Expanded(
                 child: ListView.builder(
                   itemExtent: 36.0,
+                  cacheExtent: 400,
                   itemCount: rowCount,
                   itemBuilder: (context, r) {
                     return Container(
@@ -480,6 +504,7 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
                               c,
                               width: colWidths[c],
                               borderSide: borderSide,
+                              scheme: scheme,
                             ),
                         ],
                       ),
@@ -496,7 +521,7 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
 
   bool _isNumericValue(String text) {
     if (text.isEmpty) return false;
-    final cleaned = text.replaceAll(RegExp(r'[\$,€,£,¥,%,\s]'), '');
+    final cleaned = text.replaceAll(_numericStripRegex, '');
     return double.tryParse(cleaned) != null;
   }
 
@@ -506,12 +531,12 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
     int c, {
     required double width,
     required BorderSide borderSide,
+    required ColorScheme scheme,
   }) {
     final cell = sheet.cell(r, c);
     final val = cell?.value ?? '';
     final isSelected = _selectedCell != null && _selectedCell!.row == r && _selectedCell!.col == c;
     final isMatch = _searchQuery.isNotEmpty && EncodingUtils.searchMatches(val, _searchQuery);
-    final scheme = Theme.of(context).colorScheme;
     final isNumeric = _isNumericValue(val);
 
     Color? bgColor;
@@ -521,7 +546,8 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
       bgColor = Colors.yellow.withValues(alpha: 0.45);
     }
 
-    return InkWell(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: () {
         HapticFeedback.selectionClick();
         setState(() => _selectedCell = cell ?? ExcelCell(row: r, col: c, coordinate: '${_colIndexToLetters(c)}${r + 1}', value: ''));

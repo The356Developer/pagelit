@@ -441,7 +441,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return Scaffold(
       appBar: AppBar(
         title: const Row(
-          children: [PdfGlyph(size: 22), SizedBox(width: 10), Text('Pagelit')],
+          children: [
+            PdfGlyph(size: 22),
+            SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                'Pagelit',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
         actions: [
           IconButton(
@@ -541,6 +551,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return SafeArea(
       bottom: false,
       child: CustomScrollView(
+        cacheExtent: 600,
         slivers: [
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
@@ -729,106 +740,99 @@ class _RecentCard extends StatelessWidget {
     final l10n = context.l10n;
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
-    return Container(
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLowest,
+    return Material(
+      color: scheme.surfaceContainerLowest,
+      elevation: 1,
+      shadowColor: scheme.brightness == Brightness.dark
+          ? Colors.black.withValues(alpha: 0.35)
+          : const Color(0x1F17161C),
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppShape.radiusLarge),
-        border: Border.all(color: scheme.outlineVariant),
-        boxShadow: [
-          BoxShadow(
-            color: scheme.brightness == Brightness.dark
-                ? Colors.black.withValues(alpha: 0.25)
-                : const Color(0x0F17161C),
-            blurRadius: 18,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        side: BorderSide(color: scheme.outlineVariant),
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(AppShape.radiusLarge),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            InkWell(
-              onTap: onOpen,
-              child: Padding(
-                padding: const EdgeInsetsDirectional.fromSTEB(14, 14, 6, 12),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _FileTile(name: name, exists: exists),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: text.titleMedium?.copyWith(
-                              decoration: exists
-                                  ? null
-                                  : TextDecoration.lineThrough,
-                            ),
+      clipBehavior: Clip.hardEdge,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            onTap: onOpen,
+            child: Padding(
+              padding: const EdgeInsetsDirectional.fromSTEB(14, 14, 6, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _FileTile(name: name, exists: exists),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: text.titleMedium?.copyWith(
+                            decoration: exists
+                                ? null
+                                : TextDecoration.lineThrough,
                           ),
-                          const SizedBox(height: 6),
-                          Text(
-                            meta,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: text.labelSmall?.copyWith(
-                              color: exists ? null : scheme.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    PopupMenuButton<_CardAction>(
-                      tooltip: l10n.fileOptions,
-                      icon: const Icon(Icons.more_horiz_rounded, size: 20),
-                      padding: EdgeInsets.zero,
-                      onSelected: (action) => switch (action) {
-                        _CardAction.open => onOpen(),
-                        _CardAction.details => onDetails?.call(),
-                        _CardAction.remove => onRemove?.call(),
-                      },
-                      itemBuilder: (context) => [
-                        PopupMenuItem(
-                          value: _CardAction.open,
-                          child: Text(l10n.open),
                         ),
-                        if (onDetails != null)
-                          PopupMenuItem(
-                            value: _CardAction.details,
-                            child: Text(l10n.details),
+                        const SizedBox(height: 6),
+                        Text(
+                          meta,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: text.labelSmall?.copyWith(
+                            color: exists ? null : scheme.primary,
                           ),
-                        if (onRemove != null)
-                          PopupMenuItem(
-                            value: _CardAction.remove,
-                            child: Text(l10n.removeFromRecents),
-                          ),
+                        ),
                       ],
                     ),
-                  ],
+                  ),
+                  PopupMenuButton<_CardAction>(
+                    tooltip: l10n.fileOptions,
+                    icon: const Icon(Icons.more_horiz_rounded, size: 20),
+                    padding: EdgeInsets.zero,
+                    onSelected: (action) => switch (action) {
+                      _CardAction.open => onOpen(),
+                      _CardAction.details => onDetails?.call(),
+                      _CardAction.remove => onRemove?.call(),
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: _CardAction.open,
+                        child: Text(l10n.open),
+                      ),
+                      if (onDetails != null)
+                        PopupMenuItem(
+                          value: _CardAction.details,
+                          child: Text(l10n.details),
+                        ),
+                      if (onRemove != null)
+                        PopupMenuItem(
+                          value: _CardAction.remove,
+                          child: Text(l10n.removeFromRecents),
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (exists && progress > 0)
+            SizedBox(
+              height: 3,
+              width: double.infinity,
+              child: ColoredBox(
+                color: scheme.outlineVariant,
+                child: FractionallySizedBox(
+                  alignment: AlignmentDirectional.centerStart,
+                  widthFactor: progress.clamp(0.0, 1.0).toDouble(),
+                  child: const ColoredBox(color: AppPalette.signal),
                 ),
               ),
             ),
-            if (exists && progress > 0)
-              SizedBox(
-                height: 3,
-                width: double.infinity,
-                child: ColoredBox(
-                  color: scheme.outlineVariant,
-                  child: FractionallySizedBox(
-                    alignment: AlignmentDirectional.centerStart,
-                    widthFactor: progress.clamp(0.0, 1.0).toDouble(),
-                    child: const ColoredBox(color: AppPalette.signal),
-                  ),
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
   }

@@ -7,6 +7,8 @@
 //                             to 0 in pubspec so it stays full-bleed)
 //   pagelit_splash_logo.png   down-scaled 780x780 PNG (centered splash,
 //                             ~260 dp wide on every screen)
+//   android/.../drawable-{xhdpi,xxhdpi,xxxhdpi}/pagelit_splash_logo.png
+//                             density-matched Android splash drawables (512, 768, 1024)
 //
 // Run: dart run tool/process_logo.dart
 import 'dart:io';
@@ -15,6 +17,12 @@ import 'package:image/image.dart' as img;
 
 const int canvas = 1024;
 const int splash = 780;
+
+const Map<String, int> _androidSplashDensities = {
+  'android/app/src/main/res/drawable-xhdpi/pagelit_splash_logo.png': 512,
+  'android/app/src/main/res/drawable-xxhdpi/pagelit_splash_logo.png': 768,
+  'android/app/src/main/res/drawable-xxxhdpi/pagelit_splash_logo.png': 1024,
+};
 
 void main() {
   final input = File('assets/logo/logo.jpg');
@@ -39,17 +47,42 @@ void main() {
     );
   }
   if (src.width != canvas || src.height != canvas) {
-    src = img.copyResize(src, width: canvas, height: canvas,
-        interpolation: img.Interpolation.linear);
+    src = img.copyResize(
+      src,
+      width: canvas,
+      height: canvas,
+      interpolation: img.Interpolation.cubic,
+    );
   }
 
   final png = img.encodePng(src);
   File('assets/logo/pagelit_icon.png').writeAsBytesSync(png);
   File('assets/logo/pagelit_foreground.png').writeAsBytesSync(png);
-  final spl = img.copyResize(src, width: splash, height: splash,
-      interpolation: img.Interpolation.linear);
-  File('assets/logo/pagelit_splash_logo.png').writeAsBytesSync(img.encodePng(spl));
+
+  final spl = img.copyResize(
+    src,
+    width: splash,
+    height: splash,
+    interpolation: img.Interpolation.cubic,
+  );
+  File('assets/logo/pagelit_splash_logo.png')
+      .writeAsBytesSync(img.encodePng(spl));
+
+  for (final entry in _androidSplashDensities.entries) {
+    final outFile = File(entry.key);
+    outFile.parent.createSync(recursive: true);
+    final resized = entry.value == canvas
+        ? src
+        : img.copyResize(
+            src,
+            width: entry.value,
+            height: entry.value,
+            interpolation: img.Interpolation.cubic,
+          );
+    outFile.writeAsBytesSync(img.encodePng(resized));
+  }
 
   stdout.writeln('Wrote pagelit_icon.png, pagelit_foreground.png, '
-      'pagelit_splash_logo.png (colors untouched)');
+      'pagelit_splash_logo.png, and Android xhdpi/xxhdpi/xxxhdpi splash '
+      'drawables (cubic interpolation, colors untouched)');
 }

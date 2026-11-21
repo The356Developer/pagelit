@@ -40,7 +40,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
   String? _error;
   int _currentSlideIndex = 0;
   final PageController _pageController = PageController();
-  bool _isZoomed = false;
+  final ValueNotifier<bool> _isZoomedNotifier = ValueNotifier<bool>(false);
   int _resetZoomTrigger = 0;
   int _replayTrigger = 0;
   bool _enableAnimations = true;
@@ -57,6 +57,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
 
   @override
   void dispose() {
+    _isZoomedNotifier.dispose();
     _pageController.dispose();
     _searchController.dispose();
     super.dispose();
@@ -69,8 +70,8 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
   }
 
   void _resetZoom() {
+    _isZoomedNotifier.value = false;
     setState(() {
-      _isZoomed = false;
       _resetZoomTrigger++;
     });
   }
@@ -403,32 +404,44 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.deepOrange.shade700,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Text(
-                'PPTX',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
+        titleSpacing: 0,
+        title: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 80) {
+              return Text(
                 cleanTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
+              );
+            }
+            return Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.deepOrange.shade700,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'PPTX',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    cleanTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            );
+          },
         ),
         actions: [
           // Play Fullscreen Presentation Slideshow
@@ -685,28 +698,33 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
       return Center(child: Text(l10n.presentationHasNoSlides));
     }
 
-    return PageView.builder(
-      controller: _pageController,
-      physics: _isZoomed
-          ? const NeverScrollableScrollPhysics()
-          : const BouncingScrollPhysics(),
-      itemCount: _deck!.slides.length,
-      onPageChanged: (idx) {
-        setState(() {
-          _currentSlideIndex = idx;
-          _isZoomed = false;
-          _resetZoomTrigger++;
-        });
-      },
-      itemBuilder: (context, index) {
-        final slide = _deck!.slides[index];
-        final isCurrent = index == _currentSlideIndex;
+    return ValueListenableBuilder<bool>(
+      valueListenable: _isZoomedNotifier,
+      builder: (context, isZoomed, _) {
+        return PageView.builder(
+          controller: _pageController,
+          physics: isZoomed
+              ? const NeverScrollableScrollPhysics()
+              : const BouncingScrollPhysics(),
+          itemCount: _deck!.slides.length,
+          onPageChanged: (idx) {
+            _isZoomedNotifier.value = false;
+            setState(() {
+              _currentSlideIndex = idx;
+              _resetZoomTrigger++;
+            });
+          },
+          itemBuilder: (context, index) {
+            final slide = _deck!.slides[index];
+            final isCurrent = index == _currentSlideIndex;
 
-        final cardWidget = _viewMode == PresentationViewMode.slides
-            ? _buildSlidePresentationCard(slide, isCurrent: isCurrent, l10n: l10n)
-            : _buildSlideOutlineCard(slide, l10n);
+            final cardWidget = _viewMode == PresentationViewMode.slides
+                ? _buildSlidePresentationCard(slide, isCurrent: isCurrent, l10n: l10n)
+                : _buildSlideOutlineCard(slide, l10n);
 
-        return RepaintBoundary(key: _keyForSlide(index), child: cardWidget);
+            return RepaintBoundary(key: _keyForSlide(index), child: cardWidget);
+          },
+        );
       },
     );
   }
@@ -727,8 +745,8 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
         _ZoomableSlidePage(
           resetZoomTrigger: _resetZoomTrigger,
           onZoomChanged: (zoomed) {
-            if (isCurrent && zoomed != _isZoomed) {
-              setState(() => _isZoomed = zoomed);
+            if (isCurrent && zoomed != _isZoomedNotifier.value) {
+              _isZoomedNotifier.value = zoomed;
             }
           },
           child: Center(
@@ -769,33 +787,40 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
           ),
         ),
         // Floating Reset Zoom Button when zoomed in
-        if (_isZoomed && isCurrent)
-          Positioned(
-            top: 16,
-            right: 20,
-            child: Material(
-              elevation: 6,
-              borderRadius: BorderRadius.circular(20),
-              color: scheme.primaryContainer,
-              child: InkWell(
-                onTap: _resetZoom,
+        if (isCurrent)
+          ValueListenableBuilder<bool>(
+            valueListenable: _isZoomedNotifier,
+            builder: (context, isZoomed, child) {
+              if (!isZoomed) return const SizedBox.shrink();
+              return child!;
+            },
+            child: Positioned(
+              top: 16,
+              right: 20,
+              child: Material(
+                elevation: 6,
                 borderRadius: BorderRadius.circular(20),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.zoom_out_map_rounded, size: 16, color: scheme.onPrimaryContainer),
-                      const SizedBox(width: 6),
-                      Text(
-                        l10n.resetZoom,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: scheme.onPrimaryContainer,
+                color: scheme.primaryContainer,
+                child: InkWell(
+                  onTap: _resetZoom,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.zoom_out_map_rounded, size: 16, color: scheme.onPrimaryContainer),
+                        const SizedBox(width: 6),
+                        Text(
+                          l10n.resetZoom,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: scheme.onPrimaryContainer,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1087,14 +1112,28 @@ class _ZoomableSlidePage extends StatefulWidget {
   State<_ZoomableSlidePage> createState() => _ZoomableSlidePageState();
 }
 
-class _ZoomableSlidePageState extends State<_ZoomableSlidePage> {
+class _ZoomableSlidePageState extends State<_ZoomableSlidePage>
+    with SingleTickerProviderStateMixin {
   final TransformationController _controller = TransformationController();
+  final ValueNotifier<bool> _panEnabledNotifier = ValueNotifier<bool>(false);
+  late final AnimationController _animController;
+  Animation<Matrix4>? _zoomAnimation;
   Offset _doubleTapPosition = Offset.zero;
   bool _wasZoomed = false;
+  int _activePointers = 0;
 
   @override
   void initState() {
     super.initState();
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    )..addListener(() {
+        final anim = _zoomAnimation;
+        if (anim != null) {
+          _controller.value = anim.value;
+        }
+      });
     _controller.addListener(_handleScaleChanged);
   }
 
@@ -1102,49 +1141,93 @@ class _ZoomableSlidePageState extends State<_ZoomableSlidePage> {
   void didUpdateWidget(covariant _ZoomableSlidePage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.resetZoomTrigger != widget.resetZoomTrigger && _wasZoomed) {
+      _animController.stop();
       _controller.value = Matrix4.identity();
     }
   }
 
   @override
   void dispose() {
+    _animController.dispose();
     _controller.removeListener(_handleScaleChanged);
     _controller.dispose();
+    _panEnabledNotifier.dispose();
     super.dispose();
   }
 
+  void _updatePanEnabled() {
+    final next = _wasZoomed || _activePointers >= 2;
+    if (_panEnabledNotifier.value != next) {
+      _panEnabledNotifier.value = next;
+    }
+  }
+
   void _handleScaleChanged() {
-    final zoomed = _controller.value.getMaxScaleOnAxis() > 1.08;
+    final zoomed = _controller.value.getMaxScaleOnAxis() > 1.04;
     if (zoomed != _wasZoomed) {
       _wasZoomed = zoomed;
+      _updatePanEnabled();
       widget.onZoomChanged(zoomed);
     }
   }
 
   void _handleDoubleTap() {
-    if (_controller.value.getMaxScaleOnAxis() > 1.08) {
-      _controller.value = Matrix4.identity();
+    final begin = _controller.value.clone();
+    final Matrix4 end;
+    if (_controller.value.getMaxScaleOnAxis() > 1.04) {
+      end = Matrix4.identity();
     } else {
       const double zoom = 2.2;
       final dx = -_doubleTapPosition.dx * (zoom - 1);
       final dy = -_doubleTapPosition.dy * (zoom - 1);
-      _controller.value = Matrix4.identity()
+      end = Matrix4.identity()
         ..translateByDouble(dx, dy, 0.0, 1.0)
         ..scaleByDouble(zoom, zoom, 1.0, 1.0);
     }
+    _zoomAnimation = Matrix4Tween(begin: begin, end: end).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
+    );
+    _animController.forward(from: 0);
   }
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onDoubleTapDown: (details) => _doubleTapPosition = details.localPosition,
-      onDoubleTap: _handleDoubleTap,
-      child: InteractiveViewer(
-        transformationController: _controller,
-        minScale: 1.0,
-        maxScale: 5.0,
-        clipBehavior: Clip.none,
-        child: widget.child,
+    final cachedChild = RepaintBoundary(child: widget.child);
+    return Listener(
+      onPointerDown: (_) {
+        _activePointers++;
+        _updatePanEnabled();
+      },
+      onPointerUp: (_) {
+        if (_activePointers > 0) _activePointers--;
+        _updatePanEnabled();
+      },
+      onPointerCancel: (_) {
+        if (_activePointers > 0) _activePointers--;
+        _updatePanEnabled();
+      },
+      child: GestureDetector(
+        onDoubleTapDown: (details) => _doubleTapPosition = details.localPosition,
+        onDoubleTap: _handleDoubleTap,
+        child: ValueListenableBuilder<bool>(
+          valueListenable: _panEnabledNotifier,
+          child: cachedChild,
+          builder: (context, panEnabled, child) {
+            return InteractiveViewer(
+              transformationController: _controller,
+              panEnabled: panEnabled,
+              minScale: 1.0,
+              maxScale: 5.0,
+              clipBehavior: Clip.none,
+              onInteractionStart: (_) {
+                if (_animController.isAnimating) {
+                  _animController.stop();
+                }
+              },
+              child: child!,
+            );
+          },
+        ),
       ),
     );
   }

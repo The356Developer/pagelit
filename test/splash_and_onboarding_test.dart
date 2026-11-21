@@ -12,6 +12,7 @@ import 'package:pagelit/services/locale_prefs.dart';
 import 'package:pagelit/services/onboarding_prefs.dart';
 import 'package:pagelit/services/theme_prefs.dart';
 import 'package:pagelit/theme/app_theme.dart';
+import 'package:pagelit/widgets/pagelit_logo.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -95,12 +96,22 @@ void main() {
   });
 
   group('SplashScreen', () {
-    testWidgets('renders brand title and tagline', (tester) async {
+    testWidgets('renders crisp PagelitLogo, brand title and tagline in light and dark modes', (tester) async {
       await tester.pumpWidget(buildTestApp(home: const SplashScreen()));
       await tester.pump();
 
+      expect(find.byType(PagelitLogo), findsOneWidget);
       expect(find.text('Pagelit'), findsOneWidget);
       expect(find.text('100% OFFLINE & PRIVATE'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      ThemePrefs.mode.value = ThemeMode.dark;
+      await tester.pump();
+      expect(find.byType(PagelitLogo), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      ThemePrefs.mode.value = ThemeMode.light;
+      await tester.pump();
     });
 
     testWidgets('navigates to OnboardingScreen when not completed', (tester) async {
