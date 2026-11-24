@@ -51,6 +51,8 @@ dependencies:
   archive: ^4.5.2
   xml: 7.0.1
   syncfusion_flutter_pdf: 35.1.40+1
+  window_manager: ^0.5.2
+  desktop_drop: ^0.8.4
 
 dev_dependencies:
   flutter_test:

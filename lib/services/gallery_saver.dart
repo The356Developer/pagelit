@@ -1,6 +1,8 @@
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:gal/gal.dart';
@@ -86,6 +88,30 @@ class GallerySaver {
     required String Function(String error) couldNotSaveMessage,
   }) async {
     try {
+      // Sanitize name: remove illegal file characters
+      final sanitizedName = name
+          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+          .replaceAll(' ', '_');
+
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        final outputUri = await FilePicker.saveFile(
+          fileName: '$sanitizedName.png',
+          type: FileType.image,
+          allowedExtensions: const ['png'],
+          bytes: imageBytes,
+        );
+        if (outputUri == null) {
+          return false;
+        }
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(successMessage),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return true;
+      }
+
       final hasAccess = await Gal.hasAccess() || await Gal.requestAccess();
       if (!hasAccess) {
         messenger.showSnackBar(
@@ -93,11 +119,6 @@ class GallerySaver {
         );
         return false;
       }
-
-      // Sanitize name: remove illegal file characters
-      final sanitizedName = name
-          .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
-          .replaceAll(' ', '_');
 
       await Gal.putImageBytes(
         imageBytes,

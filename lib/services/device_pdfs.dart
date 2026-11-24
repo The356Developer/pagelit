@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'encoding_utils.dart';
 
@@ -47,9 +51,22 @@ class DevicePdfLibrary {
 
   static const _channel = MethodChannel('pagelit/device_pdfs');
   static const _foldersKey = 'device_pdf_folders';
+  static const _supportedExtensions = {
+    '.pdf',
+    '.docx',
+    '.doc',
+    '.pptx',
+    '.ppt',
+    '.xlsx',
+    '.xls',
+  };
 
-  /// Whether "All files access" is granted (Android 11+ only).
+  static bool get _isDesktop =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
+  /// Whether "All files access" is granted (Android 11+ only; always true on desktop).
   static Future<bool> hasAllFilesAccess() async {
+    if (_isDesktop) return true;
     try {
       return await _channel.invokeMethod<bool>('hasAllFilesAccess') ?? false;
     } on PlatformException {
@@ -61,6 +78,7 @@ class DevicePdfLibrary {
 
   /// Opens the system screen where "All files access" can be granted.
   static Future<bool> requestAllFilesAccess() async {
+    if (_isDesktop) return true;
     try {
       return await _channel.invokeMethod<bool>('requestAllFilesAccess') ??
           false;
@@ -71,7 +89,7 @@ class DevicePdfLibrary {
     }
   }
 
-  /// Folders the user added, as persisted tree URIs.
+  /// Folders the user added, as persisted tree URIs or filesystem paths.
   static Future<List<String>> loadFolders() async {
     final prefs = await SharedPreferences.getInstance();
     return List<String>.of(prefs.getStringList(_foldersKey) ?? const []);
@@ -80,12 +98,16 @@ class DevicePdfLibrary {
   /// Shows the system folder picker and stores the chosen folder.
   static Future<List<String>> addFolder() async {
     String? uri;
-    try {
-      uri = await _channel.invokeMethod<String>('pickFolder');
-    } on PlatformException {
-      uri = null;
-    } on MissingPluginException {
-      uri = null;
+    if (_isDesktop) {
+      uri = await FilePicker.getDirectoryPath();
+    } else {
+      try {
+        uri = await _channel.invokeMethod<String>('pickFolder');
+      } on PlatformException {
+        uri = null;
+      } on MissingPluginException {
+        uri = null;
+      }
     }
     final folders = await loadFolders();
     if (uri == null || uri.isEmpty || folders.contains(uri)) return folders;
@@ -111,6 +133,9 @@ class DevicePdfLibrary {
 
   /// Every document inside [folders], plus all device documents when access is granted.
   static Future<List<DevicePdf>> listPdfs(List<String> folders) async {
+    if (_isDesktop) {
+      return _listDesktopDocuments(folders);
+    }
     List<Object?>? raw;
     try {
       raw = await _channel.invokeMethod<List<Object?>>('listPdfs', {
@@ -126,6 +151,63 @@ class DevicePdfLibrary {
         raw.whereType<Map<Object?, Object?>>().map(DevicePdf.fromMap).toList()
           ..sort((a, b) => b.modified.compareTo(a.modified));
     return pdfs;
+  }
+
+  static Future<List<DevicePdf>> _listDesktopDocuments(
+    List<String> folders,
+  ) async {
+    final searchRoots = <String>{...folders};
+    if (searchRoots.isEmpty) {
+      try {
+        final downloads = await getDownloadsDirectory();
+        if (downloads != null && downloads.existsSync()) {
+          searchRoots.add(downloads.path);
+        }
+      } catch (_) {}
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        if (docs.existsSync()) {
+          searchRoots.add(docs.path);
+        }
+      } catch (_) {}
+    }
+
+    final seen = <String>{};
+    final results = <DevicePdf>[];
+    for (final root in searchRoots) {
+      final dir = Directory(root);
+      if (!dir.existsSync()) continue;
+      try {
+        await for (final entity in dir.list(followLinks: false)) {
+          if (entity is! File) continue;
+          final filePath = entity.path;
+          final lower = filePath.toLowerCase();
+          final dot = lower.lastIndexOf('.');
+          if (dot == -1) continue;
+          if (!_supportedExtensions.contains(lower.substring(dot))) continue;
+          if (!seen.add(filePath)) continue;
+          try {
+            final stat = await entity.stat();
+            final sep = Platform.pathSeparator;
+            final rawName = filePath.split(sep).last;
+            results.add(
+              DevicePdf(
+                name: EncodingUtils.cleanDisplayName(rawName),
+                size: stat.size,
+                modified: stat.modified,
+                path: filePath,
+              ),
+            );
+          } catch (_) {
+            // Skip unreadable files.
+          }
+        }
+      } catch (_) {
+        // Skip folders without read permission.
+      }
+    }
+    results.sort((a, b) => b.modified.compareTo(a.modified));
+    return results;
   }
 
   /// A path the reader can open for [pdf].

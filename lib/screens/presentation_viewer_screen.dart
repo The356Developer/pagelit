@@ -51,6 +51,7 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
   String _searchQuery = '';
   double _fontScale = 1.0;
   bool _fillContainer = true;
+  bool _showDesktopSlideStrip = true;
 
   GlobalKey _keyForSlide(int index) =>
       _slideKeys.putIfAbsent(index, GlobalKey.new);
@@ -402,7 +403,49 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
     final scheme = Theme.of(context).colorScheme;
     final cleanTitle = EncodingUtils.cleanDisplayName(widget.title);
 
-    return Scaffold(
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowRight): () {
+          if (_deck != null && _currentSlideIndex < _deck!.slides.length - 1) {
+            _pageController.nextPage(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+            );
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.pageDown): () {
+          if (_deck != null && _currentSlideIndex < _deck!.slides.length - 1) {
+            _pageController.nextPage(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+            );
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.arrowLeft): () {
+          if (_currentSlideIndex > 0) {
+            _pageController.previousPage(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+            );
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.pageUp): () {
+          if (_currentSlideIndex > 0) {
+            _pageController.previousPage(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+            );
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.f5): () {
+          if (_deck != null && _deck!.slides.isNotEmpty) {
+            _startSlideshow();
+          }
+        },
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
         title: LayoutBuilder(
@@ -670,6 +713,8 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
             const SafeArea(top: false, child: SizedBox(height: 8)),
         ],
       ),
+    ),
+      ),
     );
   }
 
@@ -698,34 +743,159 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
       return Center(child: Text(l10n.presentationHasNoSlides));
     }
 
-    return ValueListenableBuilder<bool>(
-      valueListenable: _isZoomedNotifier,
-      builder: (context, isZoomed, _) {
-        return PageView.builder(
-          controller: _pageController,
-          physics: isZoomed
-              ? const NeverScrollableScrollPhysics()
-              : const BouncingScrollPhysics(),
-          itemCount: _deck!.slides.length,
-          onPageChanged: (idx) {
-            _isZoomedNotifier.value = false;
-            setState(() {
-              _currentSlideIndex = idx;
-              _resetZoomTrigger++;
-            });
-          },
-          itemBuilder: (context, index) {
-            final slide = _deck!.slides[index];
-            final isCurrent = index == _currentSlideIndex;
+    final isWide = MediaQuery.sizeOf(context).width >= 960;
 
-            final cardWidget = _viewMode == PresentationViewMode.slides
-                ? _buildSlidePresentationCard(slide, isCurrent: isCurrent, l10n: l10n)
-                : _buildSlideOutlineCard(slide, l10n);
+    return Row(
+      children: [
+        if (isWide && _showDesktopSlideStrip)
+          Container(
+            width: 210,
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerLow,
+              border: Border(
+                right: BorderSide(
+                  color: Theme.of(context).colorScheme.outlineVariant,
+                ),
+              ),
+            ),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 10, 6, 6),
+                  child: Row(
+                    children: [
+                      Text(
+                        'SLIDES (${_deck!.slides.length})',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                              letterSpacing: 0.8,
+                            ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: const Icon(Icons.chevron_left_rounded, size: 18),
+                        tooltip: 'Hide slide strip',
+                        onPressed: () =>
+                            setState(() => _showDesktopSlideStrip = false),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    itemCount: _deck!.slides.length,
+                    itemBuilder: (context, idx) {
+                      final s = _deck!.slides[idx];
+                      final selected = idx == _currentSlideIndex;
+                      final scheme = Theme.of(context).colorScheme;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: Material(
+                          color: selected
+                              ? scheme.primaryContainer
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(10),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () => _pageController.animateToPage(
+                              idx,
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeOutCubic,
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 8,
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(
+                                    '${idx + 1}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelMedium
+                                        ?.copyWith(
+                                          color: selected
+                                              ? scheme.primary
+                                              : scheme.onSurfaceVariant,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      s.title.isNotEmpty
+                                          ? s.title
+                                          : 'Slide ${idx + 1}',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            fontWeight: selected
+                                                ? FontWeight.w600
+                                                : FontWeight.w400,
+                                          ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        Expanded(
+          child: ValueListenableBuilder<bool>(
+            valueListenable: _isZoomedNotifier,
+            builder: (context, isZoomed, _) {
+              return PageView.builder(
+                controller: _pageController,
+                physics: isZoomed
+                    ? const NeverScrollableScrollPhysics()
+                    : const BouncingScrollPhysics(),
+                itemCount: _deck!.slides.length,
+                onPageChanged: (idx) {
+                  _isZoomedNotifier.value = false;
+                  setState(() {
+                    _currentSlideIndex = idx;
+                    _resetZoomTrigger++;
+                  });
+                },
+                itemBuilder: (context, index) {
+                  final slide = _deck!.slides[index];
+                  final isCurrent = index == _currentSlideIndex;
 
-            return RepaintBoundary(key: _keyForSlide(index), child: cardWidget);
-          },
-        );
-      },
+                  final cardWidget = _viewMode == PresentationViewMode.slides
+                      ? _buildSlidePresentationCard(
+                          slide,
+                          isCurrent: isCurrent,
+                          l10n: l10n,
+                        )
+                      : _buildSlideOutlineCard(slide, l10n);
+
+                  return RepaintBoundary(
+                    key: _keyForSlide(index),
+                    child: cardWidget,
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -2231,7 +2401,24 @@ class _PresentationSlideshowScreenState
     final canStepNext =
         _currentIndex < totalSlides - 1 || _revealedStep < totalSteps;
 
-    return Scaffold(
+    return CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.arrowRight):
+            _advanceStepOrNextSlide,
+        const SingleActivator(LogicalKeyboardKey.pageDown):
+            _advanceStepOrNextSlide,
+        const SingleActivator(LogicalKeyboardKey.space):
+            _advanceStepOrNextSlide,
+        const SingleActivator(LogicalKeyboardKey.arrowLeft):
+            _stepBackOrPrevSlide,
+        const SingleActivator(LogicalKeyboardKey.pageUp):
+            _stepBackOrPrevSlide,
+        const SingleActivator(LogicalKeyboardKey.escape): () =>
+            Navigator.of(context).pop(),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
       backgroundColor: Colors.black,
       body: GestureDetector(
         behavior: HitTestBehavior.opaque,
@@ -2556,6 +2743,8 @@ class _PresentationSlideshowScreenState
             ),
           ],
         ),
+      ),
+    ),
       ),
     );
   }
