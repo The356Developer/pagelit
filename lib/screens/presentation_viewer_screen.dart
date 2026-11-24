@@ -5,13 +5,20 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../l10n/app_localizations.dart';
+import '../services/device_pdfs.dart';
+import '../services/display/display_service.dart';
 import '../services/encoding_utils.dart';
 import '../services/gallery_saver.dart';
 import '../services/gemini_share_service.dart';
+import '../services/hand_tracking/hand_tracking_service.dart';
 import '../services/presentation_parser.dart';
+import '../services/session/session_models.dart';
+import '../services/slide_image_precacher.dart';
 import '../widgets/page_scrubber.dart';
+import 'presenter_view_screen.dart';
 
 enum PresentationViewMode {
   slides,
@@ -92,11 +99,29 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
     try {
       final file = File(widget.filePath);
       final bytes = await file.readAsBytes();
+      if (DevicePdfLibrary.isLegacyOleBinary(bytes)) {
+        if (!mounted) return;
+        setState(() {
+          _error =
+              'Legacy PowerPoint 97–2003 (.ppt) binary files are not supported directly. Please re-save as .pptx or PDF.';
+          _isLoading = false;
+        });
+        return;
+      }
       final deck = await PresentationParser.parse(bytes);
       if (!mounted) return;
       setState(() {
         _deck = deck;
         _isLoading = false;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _deck != null) {
+          SlideImagePrecacher.precacheAround(
+            context,
+            _deck!,
+            _currentSlideIndex,
+          );
+        }
       });
     } catch (e) {
       if (!mounted) return;
@@ -107,18 +132,58 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
     }
   }
 
-  void _startSlideshow() {
+  bool get _isDesktop =>
+      !Platform.environment.containsKey('FLUTTER_TEST') &&
+      (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  Future<void> _startSlideshow({
+    bool forcePresenterView = false,
+    bool fromBeginning = false,
+  }) async {
     if (_deck == null || _deck!.slides.isEmpty) return;
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
+    final startIdx = fromBeginning ? 0 : _currentSlideIndex;
+
+    if (_isDesktop) {
+      final displays = await DisplayService.instance.getDisplays();
+      if (!mounted) return;
+      if (forcePresenterView || displays.length >= 2) {
+        final lastIdx = await PresenterViewScreen.push(
+          context,
+          deck: _deck!,
+          filePath: widget.filePath,
+          title: widget.title,
+          initialSlideIndex: startIdx,
+          enableAnimations: _enableAnimations,
+          autoLaunchProjector: displays.length >= 2,
+        );
+        if (mounted &&
+            lastIdx != null &&
+            _pageController.hasClients &&
+            lastIdx != _currentSlideIndex) {
+          _pageController.jumpToPage(lastIdx);
+        }
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    final lastIdx = await Navigator.of(context).push<int>(
+      MaterialPageRoute<int>(
         builder: (_) => PresentationSlideshowScreen(
           deck: _deck!,
-          initialSlideIndex: _currentSlideIndex,
+          filePath: widget.filePath,
+          initialSlideIndex: startIdx,
           title: widget.title,
           enableAnimations: _enableAnimations,
         ),
       ),
     );
+    if (mounted &&
+        lastIdx != null &&
+        _pageController.hasClients &&
+        lastIdx != _currentSlideIndex) {
+      _pageController.jumpToPage(lastIdx);
+    }
   }
 
   Future<void> _shareFile() async {
@@ -439,7 +504,17 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
         },
         const SingleActivator(LogicalKeyboardKey.f5): () {
           if (_deck != null && _deck!.slides.isNotEmpty) {
+            _startSlideshow(fromBeginning: true);
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.f5, shift: true): () {
+          if (_deck != null && _deck!.slides.isNotEmpty) {
             _startSlideshow();
+          }
+        },
+        const SingleActivator(LogicalKeyboardKey.f5, alt: true): () {
+          if (_deck != null && _deck!.slides.isNotEmpty) {
+            _startSlideshow(forcePresenterView: true);
           }
         },
       },
@@ -487,13 +562,19 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
           },
         ),
         actions: [
-          // Play Fullscreen Presentation Slideshow
+          // Play Fullscreen Presentation Slideshow (auto-uses Dual-Screen Presenter Mode when 2+ displays connected)
           if (_deck != null && _deck!.slides.isNotEmpty)
             IconButton(
-              tooltip: l10n.playSlideshow,
+              tooltip: '${l10n.playSlideshow} (F5 / Shift+F5)',
               icon: const Icon(Icons.play_circle_fill_rounded, size: 26),
               color: scheme.primary,
               onPressed: _startSlideshow,
+            ),
+          if (_isDesktop && _deck != null && _deck!.slides.isNotEmpty)
+            IconButton(
+              tooltip: 'Presenter View & 2–3m Hand Control (Alt+F5)',
+              icon: const Icon(Icons.co_present_rounded, size: 22),
+              onPressed: () => _startSlideshow(forcePresenterView: true),
             ),
           if (_deck != null && _deck!.slides.isNotEmpty)
             Padding(
@@ -873,6 +954,9 @@ class _PresentationViewerScreenState extends State<PresentationViewerScreen> {
                     _currentSlideIndex = idx;
                     _resetZoomTrigger++;
                   });
+                  if (_deck != null) {
+                    SlideImagePrecacher.precacheAround(context, _deck!, idx);
+                  }
                 },
                 itemBuilder: (context, index) {
                   final slide = _deck!.slides[index];
@@ -1784,42 +1868,78 @@ class _SlideCanvasViewState extends State<SlideCanvasView>
     if (steps == null || steps.isEmpty) return child;
 
     final currentStep = widget.revealedStep!;
-    final entrance = steps.where((s) => !s.isEmphasis).firstOrNull;
+    final entrance = steps.where((s) => s.isEntrance).firstOrNull;
+    final exit = steps.where((s) => s.isExit).firstOrNull;
     final emphasis = steps
         .where((s) => s.isEmphasis && s.clickGroup == currentStep)
         .firstOrNull;
 
-    if (entrance != null) {
-      if (entrance.clickGroup > currentStep) {
+    if (entrance != null && currentStep < entrance.clickGroup) {
+      return IgnorePointer(
+        child: Opacity(opacity: 0.0, child: child),
+      );
+    }
+
+    if (exit != null && currentStep > exit.clickGroup) {
+      return IgnorePointer(
+        child: Opacity(opacity: 0.0, child: child),
+      );
+    }
+
+    if (exit != null && currentStep == exit.clickGroup) {
+      if (!_animationsActive) {
         return IgnorePointer(
           child: Opacity(opacity: 0.0, child: child),
         );
       }
-      if (entrance.clickGroup == currentStep) {
-        if (!_animationsActive) return child;
-        final totalMs = max(120, _controller.duration?.inMilliseconds ?? 420);
-        final start = (entrance.delayMs / totalMs).clamp(0.0, 0.85);
-        final end =
-            ((entrance.delayMs + entrance.durationMs) / totalMs).clamp(start + 0.05, 1.0);
+      final totalMs = max(120, _controller.duration?.inMilliseconds ?? 420);
+      final start = (exit.delayMs / totalMs).clamp(0.0, 0.85);
+      final end = ((exit.delayMs + exit.durationMs) / totalMs)
+          .clamp(start + 0.05, 1.0);
 
-        return AnimatedBuilder(
-          animation: _controller,
-          child: child,
-          builder: (context, builtChild) {
-            final rawT = Interval(start, end).transform(_controller.value);
-            final t = Curves.easeOutCubic.transform(rawT).clamp(0.0, 1.0);
-            return _applyAnimationEffect(
-              child: builtChild!,
-              effect: entrance.effect,
-              direction: entrance.direction,
-              t: t,
-              width: width,
-              height: height,
-              scale: scale,
-            );
-          },
-        );
-      }
+      return AnimatedBuilder(
+        animation: _controller,
+        child: child,
+        builder: (context, builtChild) {
+          final rawT = Interval(start, end).transform(_controller.value);
+          final outT = (1.0 - Curves.easeInCubic.transform(rawT)).clamp(0.0, 1.0);
+          return _applyAnimationEffect(
+            child: builtChild!,
+            effect: exit.effect,
+            direction: exit.direction,
+            t: outT,
+            width: width,
+            height: height,
+            scale: scale,
+          );
+        },
+      );
+    }
+
+    if (entrance != null && currentStep == entrance.clickGroup) {
+      if (!_animationsActive) return child;
+      final totalMs = max(120, _controller.duration?.inMilliseconds ?? 420);
+      final start = (entrance.delayMs / totalMs).clamp(0.0, 0.85);
+      final end = ((entrance.delayMs + entrance.durationMs) / totalMs)
+          .clamp(start + 0.05, 1.0);
+
+      return AnimatedBuilder(
+        animation: _controller,
+        child: child,
+        builder: (context, builtChild) {
+          final rawT = Interval(start, end).transform(_controller.value);
+          final t = Curves.easeOutCubic.transform(rawT).clamp(0.0, 1.0);
+          return _applyAnimationEffect(
+            child: builtChild!,
+            effect: entrance.effect,
+            direction: entrance.direction,
+            t: t,
+            width: width,
+            height: height,
+            scale: scale,
+          );
+        },
+      );
     }
 
     if (emphasis != null && _animationsActive) {
@@ -2071,12 +2191,14 @@ class PresentationSlideshowScreen extends StatefulWidget {
   const PresentationSlideshowScreen({
     super.key,
     required this.deck,
+    this.filePath = '',
     this.initialSlideIndex = 0,
     required this.title,
     this.enableAnimations = true,
   });
 
   final PresentationDeck deck;
+  final String filePath;
   final int initialSlideIndex;
   final String title;
   final bool enableAnimations;
@@ -2100,8 +2222,13 @@ class _PresentationSlideshowScreenState
   bool _showControls = true;
   bool _isAutoPlaying = false;
   bool _isLandscape = false;
+  bool _enteredDesktopFullScreen = false;
   Timer? _hideControlsTimer;
   late final AnimationController _autoPlayProgressController;
+
+  bool get _isDesktop =>
+      !Platform.environment.containsKey('FLUTTER_TEST') &&
+      (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   PresentationSlide get _currentSlide => widget.deck.slides[_currentIndex];
 
@@ -2118,16 +2245,43 @@ class _PresentationSlideshowScreenState
           _advanceStepOrNextSlide(fromAutoPlay: true);
         }
       });
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    if (_isDesktop) {
+      _enterDesktopFullScreenIfNeeded();
+      final ht = HandTrackingService.instance;
+      if (ht.isSupported) {
+        ht.attach((cmd) {
+          if (!mounted) return;
+          if (cmd is NextStepCommand) _advanceStepOrNextSlide();
+          if (cmd is PrevStepCommand) _stepBackOrPrevSlide();
+        });
+      }
+    } else {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    }
     _scheduleHideControls();
+  }
+
+  Future<void> _enterDesktopFullScreenIfNeeded() async {
+    final alreadyFull = await windowManager.isFullScreen();
+    if (!alreadyFull && mounted) {
+      _enteredDesktopFullScreen = true;
+      await windowManager.setFullScreen(true);
+    }
   }
 
   @override
   void dispose() {
     _hideControlsTimer?.cancel();
     _autoPlayProgressController.dispose();
-    SystemChrome.setPreferredOrientations([]);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    if (_isDesktop) {
+      HandTrackingService.instance.detach();
+      if (_enteredDesktopFullScreen) {
+        windowManager.setFullScreen(false);
+      }
+    } else {
+      SystemChrome.setPreferredOrientations([]);
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     super.dispose();
   }
 
@@ -2414,7 +2568,7 @@ class _PresentationSlideshowScreenState
         const SingleActivator(LogicalKeyboardKey.pageUp):
             _stepBackOrPrevSlide,
         const SingleActivator(LogicalKeyboardKey.escape): () =>
-            Navigator.of(context).pop(),
+            Navigator.of(context).pop(_currentIndex),
       },
       child: Focus(
         autofocus: true,
@@ -2561,7 +2715,8 @@ class _PresentationSlideshowScreenState
                               Icons.arrow_back_rounded,
                               color: Colors.white,
                             ),
-                            onPressed: () => Navigator.of(context).pop(),
+                            onPressed: () =>
+                                Navigator.of(context).pop(_currentIndex),
                           ),
                           const SizedBox(width: 4),
                           Expanded(
@@ -2604,16 +2759,45 @@ class _PresentationSlideshowScreenState
                             ),
                             onPressed: _replayCurrentSlide,
                           ),
-                          IconButton(
-                            tooltip: l10n.rotateScreen,
-                            icon: Icon(
-                              _isLandscape
-                                  ? Icons.screen_lock_rotation_rounded
-                                  : Icons.screen_rotation_rounded,
-                              color: Colors.white,
+                          if (_isDesktop)
+                            IconButton(
+                              tooltip: 'Switch to Presenter View',
+                              icon: const Icon(
+                                Icons.co_present_rounded,
+                                color: Colors.white,
+                              ),
+                              onPressed: () async {
+                                final idx = _currentIndex;
+                                if (_enteredDesktopFullScreen) {
+                                  _enteredDesktopFullScreen = false;
+                                  await windowManager.setFullScreen(false);
+                                }
+                                if (!context.mounted) return;
+                                await Navigator.of(context)
+                                    .pushReplacement<int, int>(
+                                  MaterialPageRoute<int>(
+                                    builder: (_) => PresenterViewScreen(
+                                      deck: widget.deck,
+                                      filePath: widget.filePath,
+                                      title: widget.title,
+                                      initialSlideIndex: idx,
+                                      enableAnimations: widget.enableAnimations,
+                                    ),
+                                  ),
+                                );
+                              },
+                            )
+                          else
+                            IconButton(
+                              tooltip: l10n.rotateScreen,
+                              icon: Icon(
+                                _isLandscape
+                                    ? Icons.screen_lock_rotation_rounded
+                                    : Icons.screen_rotation_rounded,
+                                color: Colors.white,
+                              ),
+                              onPressed: _toggleLandscape,
                             ),
-                            onPressed: _toggleLandscape,
-                          ),
                           Container(
                             padding: const EdgeInsets.symmetric(
                               horizontal: 10,

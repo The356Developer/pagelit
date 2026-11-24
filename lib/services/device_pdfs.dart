@@ -62,7 +62,8 @@ class DevicePdfLibrary {
   };
 
   static bool get _isDesktop =>
-      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+      !Platform.environment.containsKey('FLUTTER_TEST') &&
+      (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   /// Whether "All files access" is granted (Android 11+ only; always true on desktop).
   static Future<bool> hasAllFilesAccess() async {
@@ -153,6 +154,31 @@ class DevicePdfLibrary {
     return pdfs;
   }
 
+  static const _ignoredDesktopDirNames = {
+    'node_modules',
+    'appdata',
+    'build',
+    'windows',
+    'program files',
+    'program files (x86)',
+    '\$recycle.bin',
+    'system volume information',
+  };
+
+  /// Returns `true` when [bytes] starts with the OLE2 Compound Document magic
+  /// header used by legacy Office 97–2003 binary files (`.ppt`, `.doc`, `.xls`).
+  static bool isLegacyOleBinary(List<int> bytes) {
+    if (bytes.length < 8) return false;
+    return bytes[0] == 0xD0 &&
+        bytes[1] == 0xCF &&
+        bytes[2] == 0x11 &&
+        bytes[3] == 0xE0 &&
+        bytes[4] == 0xA1 &&
+        bytes[5] == 0xB1 &&
+        bytes[6] == 0x1A &&
+        bytes[7] == 0xE1;
+  }
+
   static Future<List<DevicePdf>> _listDesktopDocuments(
     List<String> folders,
   ) async {
@@ -175,39 +201,74 @@ class DevicePdfLibrary {
     final seen = <String>{};
     final results = <DevicePdf>[];
     for (final root in searchRoots) {
-      final dir = Directory(root);
-      if (!dir.existsSync()) continue;
-      try {
-        await for (final entity in dir.list(followLinks: false)) {
-          if (entity is! File) continue;
-          final filePath = entity.path;
-          final lower = filePath.toLowerCase();
-          final dot = lower.lastIndexOf('.');
-          if (dot == -1) continue;
-          if (!_supportedExtensions.contains(lower.substring(dot))) continue;
-          if (!seen.add(filePath)) continue;
-          try {
-            final stat = await entity.stat();
-            final sep = Platform.pathSeparator;
-            final rawName = filePath.split(sep).last;
-            results.add(
-              DevicePdf(
-                name: EncodingUtils.cleanDisplayName(rawName),
-                size: stat.size,
-                modified: stat.modified,
-                path: filePath,
-              ),
-            );
-          } catch (_) {
-            // Skip unreadable files.
-          }
-        }
-      } catch (_) {
-        // Skip folders without read permission.
-      }
+      await _scanDesktopDirectory(
+        Directory(root),
+        depth: 0,
+        maxDepth: 4,
+        seen: seen,
+        results: results,
+      );
     }
     results.sort((a, b) => b.modified.compareTo(a.modified));
     return results;
+  }
+
+  static Future<void> _scanDesktopDirectory(
+    Directory dir, {
+    required int depth,
+    required int maxDepth,
+    required Set<String> seen,
+    required List<DevicePdf> results,
+  }) async {
+    try {
+      if (!dir.existsSync()) return;
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is Directory) {
+          if (depth >= maxDepth) continue;
+          final dirName =
+              entity.path.split(Platform.pathSeparator).last.toLowerCase();
+          if (dirName.isEmpty ||
+              dirName.startsWith('.') ||
+              _ignoredDesktopDirNames.contains(dirName)) {
+            continue;
+          }
+          await _scanDesktopDirectory(
+            entity,
+            depth: depth + 1,
+            maxDepth: maxDepth,
+            seen: seen,
+            results: results,
+          );
+          continue;
+        }
+        if (entity is! File) continue;
+        final filePath = entity.path;
+        final sep = Platform.pathSeparator;
+        final rawName = filePath.split(sep).last;
+        if (rawName.startsWith('~\$') || rawName.startsWith('.')) continue;
+
+        final lower = rawName.toLowerCase();
+        final dot = lower.lastIndexOf('.');
+        if (dot == -1) continue;
+        if (!_supportedExtensions.contains(lower.substring(dot))) continue;
+        if (!seen.add(filePath)) continue;
+        try {
+          final stat = await entity.stat();
+          results.add(
+            DevicePdf(
+              name: EncodingUtils.cleanDisplayName(rawName),
+              size: stat.size,
+              modified: stat.modified,
+              path: filePath,
+            ),
+          );
+        } catch (_) {
+          // Skip unreadable files.
+        }
+      }
+    } catch (_) {
+      // Skip folders without read permission.
+    }
   }
 
   /// A path the reader can open for [pdf].

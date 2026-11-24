@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../l10n/app_localizations.dart';
+import '../services/device_pdfs.dart';
 import '../services/encoding_utils.dart';
 import '../services/gallery_saver.dart';
 import '../services/gemini_share_service.dart';
@@ -168,6 +169,15 @@ class _WordViewerScreenState extends State<WordViewerScreen>
     try {
       final file = File(widget.filePath);
       final bytes = await file.readAsBytes();
+      if (DevicePdfLibrary.isLegacyOleBinary(bytes)) {
+        if (!mounted) return;
+        setState(() {
+          _error =
+              'Legacy Word 97–2003 (.doc) binary files are not supported directly. Please re-save as .docx or PDF.';
+          _isLoading = false;
+        });
+        return;
+      }
       final doc = await WordParser.parse(bytes);
       final hasContent = doc.blocks.isNotEmpty ||
           doc.floatingElements.isNotEmpty ||

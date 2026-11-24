@@ -64,6 +64,8 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
     'xls',
   };
 
+  static const int _maxWarmDocumentTabs = 3;
+
   final List<_DesktopTab> _tabs = [
     const _DesktopTab(
       id: '__home__',
@@ -71,12 +73,30 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
       title: 'Home',
     ),
   ];
+  final List<String> _warmDocumentTabIds = [];
   int _activeIndex = 0;
   bool _isMaximized = false;
   bool _isDraggingFile = false;
   int _homeRefreshTrigger = 0;
 
   final FocusNode _searchFocusNode = FocusNode();
+
+  void _touchWarmTab(_DesktopTab tab) {
+    if (tab.kind != _DesktopTabKind.document) return;
+    _warmDocumentTabIds.remove(tab.id);
+    _warmDocumentTabIds.add(tab.id);
+    while (_warmDocumentTabIds.length > _maxWarmDocumentTabs) {
+      _warmDocumentTabIds.removeAt(0);
+    }
+  }
+
+  void _activateTab(int index) {
+    if (index < 0 || index >= _tabs.length) return;
+    setState(() {
+      _activeIndex = index;
+      _touchWarmTab(_tabs[index]);
+    });
+  }
 
   @override
   void initState() {
@@ -136,21 +156,22 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
     if (existingIndex != -1) {
       setState(() {
         _activeIndex = existingIndex;
+        _touchWarmTab(_tabs[existingIndex]);
         _homeRefreshTrigger++;
       });
       return;
     }
 
+    final newTab = _DesktopTab(
+      id: path,
+      kind: _DesktopTabKind.document,
+      title: cleanTitle,
+      filePath: path,
+    );
     setState(() {
-      _tabs.add(
-        _DesktopTab(
-          id: path,
-          kind: _DesktopTabKind.document,
-          title: cleanTitle,
-          filePath: path,
-        ),
-      );
+      _tabs.add(newTab);
       _activeIndex = _tabs.length - 1;
+      _touchWarmTab(newTab);
       _homeRefreshTrigger++;
     });
   }
@@ -169,7 +190,7 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
   void _openSettingsTab() {
     final existing = _tabs.indexWhere((t) => t.kind == _DesktopTabKind.settings);
     if (existing != -1) {
-      setState(() => _activeIndex = existing);
+      _activateTab(existing);
       return;
     }
     setState(() {
@@ -187,28 +208,59 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
   void _closeTab(int index) {
     if (index <= 0 || index >= _tabs.length) return;
     setState(() {
-      _tabs.removeAt(index);
+      final removed = _tabs.removeAt(index);
+      _warmDocumentTabIds.remove(removed.id);
       if (_activeIndex >= _tabs.length) {
         _activeIndex = _tabs.length - 1;
       } else if (_activeIndex > index) {
         _activeIndex--;
       }
+      _touchWarmTab(_tabs[_activeIndex]);
       _homeRefreshTrigger++;
     });
   }
 
   void _cycleTab(int delta) {
     if (_tabs.length <= 1) return;
-    setState(() {
-      _activeIndex = (_activeIndex + delta + _tabs.length) % _tabs.length;
-    });
+    final next = (_activeIndex + delta + _tabs.length) % _tabs.length;
+    _activateTab(next);
   }
 
   void _focusHomeSearch() {
-    setState(() => _activeIndex = 0);
+    _activateTab(0);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _searchFocusNode.requestFocus();
     });
+  }
+
+  bool _shouldKeepTabMounted(int index, _DesktopTab tab) {
+    if (index == _activeIndex) return true;
+    if (tab.kind == _DesktopTabKind.home) return true;
+    if (tab.kind == _DesktopTabKind.settings) return false;
+    return _warmDocumentTabIds.contains(tab.id);
+  }
+
+  Widget _buildBoundedTabStack() {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        for (int i = 0; i < _tabs.length; i++)
+          if (_shouldKeepTabMounted(i, _tabs[i]))
+            KeyedSubtree(
+              key: ValueKey('shell_slot_${_tabs[i].id}'),
+              child: Offstage(
+                offstage: i != _activeIndex,
+                child: TickerMode(
+                  enabled: i == _activeIndex,
+                  child: ExcludeFocus(
+                    excluding: i != _activeIndex,
+                    child: _buildTabBody(_tabs[i]),
+                  ),
+                ),
+              ),
+            ),
+      ],
+    );
   }
 
   Widget _buildTabBody(_DesktopTab tab) {
@@ -299,15 +351,12 @@ class _DesktopShellScreenState extends State<DesktopShellScreen>
                       tabs: _tabs,
                       activeIndex: _activeIndex,
                       isMaximized: _isMaximized,
-                      onSelectTab: (i) => setState(() => _activeIndex = i),
+                      onSelectTab: _activateTab,
                       onCloseTab: _closeTab,
                       onNewTabPickFile: _pickFile,
                     ),
                     Expanded(
-                      child: IndexedStack(
-                        index: _activeIndex,
-                        children: _tabs.map(_buildTabBody).toList(),
-                      ),
+                      child: _buildBoundedTabStack(),
                     ),
                   ],
                 ),

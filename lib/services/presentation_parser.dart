@@ -211,6 +211,13 @@ enum SlideAnimationTrigger {
   afterPrevious,
 }
 
+/// Phase of an OOXML `<p:timing>` animation step.
+enum SlideAnimationPhase {
+  entrance,
+  emphasis,
+  exit,
+}
+
 /// Single step in a slide's OOXML `<p:timing>` animation timeline.
 class SlideAnimationStep {
   const SlideAnimationStep({
@@ -221,7 +228,7 @@ class SlideAnimationStep {
     this.durationMs = 420,
     this.delayMs = 0,
     this.clickGroup = 1,
-    this.isEmphasis = false,
+    this.phase = SlideAnimationPhase.entrance,
   });
 
   final String shapeId;
@@ -233,10 +240,14 @@ class SlideAnimationStep {
 
   /// `0` = auto-plays on slide entry; `>= 1` = plays on tap step `clickGroup`.
   final int clickGroup;
-  final bool isEmphasis;
+  final SlideAnimationPhase phase;
+
+  bool get isEntrance => phase == SlideAnimationPhase.entrance;
+  bool get isEmphasis => phase == SlideAnimationPhase.emphasis;
+  bool get isExit => phase == SlideAnimationPhase.exit;
 }
 
-/// A complete presentation slide containing visual elements, extracted text, and media.
+/// A complete presentation slide containing visual elements, extracted text, speaker notes, and media.
 class PresentationSlide {
   const PresentationSlide({
     required this.slideNumber,
@@ -244,6 +255,7 @@ class PresentationSlide {
     required this.bulletPoints,
     required this.images,
     this.elements = const [],
+    this.speakerNotes = const [],
     this.backgroundColor,
     this.backgroundImage,
     this.transitionType = SlideTransitionType.fade,
@@ -256,11 +268,20 @@ class PresentationSlide {
   final List<String> bulletPoints;
   final List<Uint8List> images;
   final List<SlideElement> elements;
+  final List<SlideParagraph> speakerNotes;
   final Color? backgroundColor;
   final Uint8List? backgroundImage;
   final SlideTransitionType transitionType;
   final int transitionDurationMs;
   final List<SlideAnimationStep> animations;
+
+  /// Plain-text speaker notes joined by paragraph breaks.
+  String get speakerNotesPlain => speakerNotes
+      .map((p) => p.plainText.trim())
+      .where((t) => t.isNotEmpty)
+      .join('\n\n');
+
+  bool get hasSpeakerNotes => speakerNotes.any((p) => p.plainText.trim().isNotEmpty);
 
   /// Number of interactive click steps (`clickGroup >= 1`) on this slide.
   int get animationClickStepCount {
@@ -364,12 +385,14 @@ class _LayoutTemplate {
     this.backgroundImage,
     this.byTypeAndIdx = const {},
     this.byType = const {},
+    this.decorativeElements = const [],
   });
 
   final Color? backgroundColor;
   final Uint8List? backgroundImage;
   final Map<String, _PlaceholderTemplate> byTypeAndIdx;
   final Map<String, _PlaceholderTemplate> byType;
+  final List<SlideElement> decorativeElements;
 
   _PlaceholderTemplate? lookup(String? type, String? idx) {
     if (type != null && idx != null) {
@@ -407,6 +430,15 @@ class PresentationParser {
   }
 
   static PresentationDeck parseSync(Uint8List bytes) {
+    if (bytes.length >= 8 &&
+        bytes[0] == 0xD0 &&
+        bytes[1] == 0xCF &&
+        bytes[2] == 0x11 &&
+        bytes[3] == 0xE0) {
+      throw const FormatException(
+        'Legacy PowerPoint 97–2003 (.ppt) binary files are not supported directly. Please re-save as .pptx.',
+      );
+    }
     final archive = ZipDecoder().decodeBytes(bytes);
 
     // 1. Read slide dimensions from presentation.xml
@@ -519,11 +551,12 @@ class PresentationParser {
       final slideFile = archive.findFile(path);
       if (slideFile == null) continue;
 
-      // Map slide-specific relationships (media, slide layouts)
+      // Map slide-specific relationships (media, slide layouts, speaker notes)
       final relsPath = _relsPathFor(path);
       final slideRelsFile = archive.findFile(relsPath);
       final mediaMap = <String, String>{};
       String? layoutPath;
+      String? notesPath;
 
       if (slideRelsFile != null) {
         try {
@@ -537,6 +570,8 @@ class PresentationParser {
 
             if (type.contains('slideLayout') || target.contains('slideLayout')) {
               layoutPath = _normalizePptTarget(_dirOf(path), target);
+            } else if (type.contains('notesSlide') || target.contains('notesSlides/')) {
+              notesPath = _normalizePptTarget(_dirOf(path), target);
             } else if (target.contains('media/')) {
               mediaMap[id] = _normalizePptTarget(_dirOf(path), target);
             }
@@ -561,6 +596,9 @@ class PresentationParser {
       // Parse slide XML
       final slideXml = EncodingUtils.decodeDocumentBytes(slideFile.content as List<int>);
       final slideDoc = XmlDocument.parse(slideXml);
+      final sldRoot = slideDoc.findAllElements('p:sld').firstOrNull ??
+          slideDoc.findAllElements('sld').firstOrNull;
+      final showMasterShapes = sldRoot?.getAttribute('showMasterSp') != '0';
 
       // Slide background (slide -> layout -> master)
       final (slideBgColor, slideBgImage) = _parseBackground(
@@ -573,7 +611,10 @@ class PresentationParser {
       final Color? slideBackgroundColor = slideBgColor ?? layoutTemplate?.backgroundColor;
       final Uint8List? slideBackgroundImage = slideBgImage ?? layoutTemplate?.backgroundImage;
 
-      final visualElements = <SlideElement>[];
+      final visualElements = <SlideElement>[
+        if (showMasterShapes && layoutTemplate != null)
+          ...layoutTemplate.decorativeElements,
+      ];
       final allImages = <Uint8List>[];
 
       // Parse Shape Tree (p:spTree)
@@ -625,6 +666,14 @@ class PresentationParser {
         title = 'Slide ${i + 1}';
       }
 
+      final speakerNotes = notesPath != null
+          ? _parseNotesSlide(
+              archive: archive,
+              notesPath: notesPath,
+              themeColors: themeColors,
+            )
+          : const <SlideParagraph>[];
+
       final transitionType = _parseTransition(slideDoc);
       final transitionDurationMs = _parseTransitionDuration(slideDoc);
       final animations = _parseTiming(slideDoc);
@@ -636,6 +685,7 @@ class PresentationParser {
           bulletPoints: bulletPoints,
           images: allImages,
           elements: visualElements,
+          speakerNotes: speakerNotes,
           backgroundColor: slideBackgroundColor,
           backgroundImage: slideBackgroundImage,
           transitionType: transitionType,
@@ -930,12 +980,171 @@ class PresentationParser {
       byType[phType] = tpl;
     }
 
+    // Extract non-placeholder background chrome/logos from master & layout
+    final sldLayoutElem = doc.findAllElements('p:sldLayout').firstOrNull ??
+        doc.findAllElements('sldLayout').firstOrNull;
+    final showParentMasterShapes =
+        sldLayoutElem?.getAttribute('showMasterSp') != '0';
+    final rawDecor = <SlideElement>[];
+    final templateSpTree = doc.findAllElements('p:spTree').firstOrNull ??
+        doc.findAllElements('spTree').firstOrNull;
+    if (templateSpTree != null) {
+      _parseShapeContainer(
+        container: templateSpTree,
+        archive: archive,
+        mediaMap: mediaMap,
+        mediaCache: mediaCache,
+        themeColors: themeColors,
+        slideWidthEmu: slideWidthEmu,
+        slideHeightEmu: slideHeightEmu,
+        elementsOut: rawDecor,
+        imagesOut: <Uint8List>[],
+        skipPlaceholders: true,
+        forceBackgroundDecor: true,
+      );
+    }
+
+    final decorativeElements = <SlideElement>[
+      if (showParentMasterShapes && parent != null)
+        ...parent.decorativeElements,
+      ...rawDecor,
+    ];
+
     return _LayoutTemplate(
       backgroundColor: bgColor ?? parent?.backgroundColor,
       backgroundImage: bgImage ?? parent?.backgroundImage,
       byTypeAndIdx: byTypeAndIdx,
       byType: byType,
+      decorativeElements: decorativeElements,
     );
+  }
+
+  /// Extracts formatted speaker notes paragraphs from `ppt/notesSlides/notesSlideN.xml`.
+  static List<SlideParagraph> _parseNotesSlide({
+    required Archive archive,
+    required String notesPath,
+    required Map<String, Color> themeColors,
+  }) {
+    final notesFile = archive.findFile(notesPath);
+    if (notesFile == null) return const [];
+
+    try {
+      final xml = EncodingUtils.decodeDocumentBytes(notesFile.content as List<int>);
+      final doc = XmlDocument.parse(xml);
+      final notesParagraphs = <SlideParagraph>[];
+
+      for (final sp in doc.findAllElements('p:sp')) {
+        final ph = sp.findAllElements('p:ph').firstOrNull ??
+            sp.findAllElements('ph').firstOrNull;
+        final phType = ph?.getAttribute('type');
+        // Exclude slide thumbnail, slide number, header, footer, and date placeholders
+        if (phType == 'sldImg' ||
+            phType == 'sldNum' ||
+            phType == 'hdr' ||
+            phType == 'ftr' ||
+            phType == 'dt') {
+          continue;
+        }
+
+        final txBody = sp.findAllElements('p:txBody').firstOrNull ??
+            sp.findAllElements('txBody').firstOrNull;
+        if (txBody == null) continue;
+
+        for (final p in txBody.findAllElements('a:p')) {
+          final pPr = p.findAllElements('a:pPr').firstOrNull ??
+              p.findAllElements('pPr').firstOrNull;
+          TextAlign alignment = TextAlign.left;
+          bool isBullet = false;
+          String? bulletChar;
+
+          if (pPr != null) {
+            final algn = pPr.getAttribute('algn');
+            if (algn == 'ctr') {
+              alignment = TextAlign.center;
+            } else if (algn == 'r') {
+              alignment = TextAlign.right;
+            } else if (algn == 'just') {
+              alignment = TextAlign.justify;
+            }
+
+            final buChar = pPr.findAllElements('a:buChar').firstOrNull ??
+                pPr.findAllElements('buChar').firstOrNull;
+            if (buChar != null) {
+              isBullet = true;
+              bulletChar = buChar.getAttribute('char') ?? '•';
+            } else if (pPr.findAllElements('a:buNone').isEmpty &&
+                pPr.getAttribute('lvl') != null) {
+              isBullet = true;
+              bulletChar = '•';
+            }
+          }
+
+          final spans = <SlideTextSpan>[];
+          for (final childNode in p.children.whereType<XmlElement>()) {
+            final nodeName = childNode.name.local;
+            if (nodeName == 'r' || nodeName == 'fld') {
+              if (nodeName == 'fld') {
+                final fldType = childNode.getAttribute('type') ?? '';
+                if (fldType.contains('slidenum')) continue;
+              }
+              final rPr = childNode.findAllElements('a:rPr').firstOrNull ??
+                  childNode.findAllElements('rPr').firstOrNull;
+              final t = childNode.findAllElements('a:t').firstOrNull ??
+                  childNode.findAllElements('t').firstOrNull;
+              final text = t?.innerText ?? '';
+              if (text.isEmpty) continue;
+
+              double fontSize = 15.0;
+              bool bold = false;
+              bool italic = false;
+              bool underline = false;
+              Color? fontColor;
+
+              if (rPr != null) {
+                final sz = int.tryParse(rPr.getAttribute('sz') ?? '');
+                if (sz != null && sz > 0) fontSize = sz / 100.0;
+                final b = rPr.getAttribute('b');
+                if (b != null) bold = b == '1' || b == 'true';
+                final i = rPr.getAttribute('i');
+                if (i != null) italic = i == '1' || i == 'true';
+                final u = rPr.getAttribute('u');
+                if (u != null && u != 'none') underline = true;
+                fontColor = _parseColorFromParent(rPr, themeColors);
+              }
+
+              spans.add(
+                SlideTextSpan(
+                  text: text,
+                  fontSize: fontSize,
+                  fontColor: fontColor,
+                  bold: bold,
+                  italic: italic,
+                  underline: underline,
+                ),
+              );
+            } else if (nodeName == 'br') {
+              spans.add(const SlideTextSpan(text: '\n'));
+            }
+          }
+
+          if (spans.isNotEmpty &&
+              spans.map((s) => s.text).join().trim().isNotEmpty) {
+            notesParagraphs.add(
+              SlideParagraph(
+                spans: spans,
+                alignment: alignment,
+                isBullet: isBullet,
+                bulletChar: bulletChar,
+              ),
+            );
+          }
+        }
+      }
+
+      return notesParagraphs;
+    } catch (_) {
+      return const [];
+    }
   }
 
   static String? _extractShapeId(XmlElement element, String nvContainerTag) {
@@ -963,6 +1172,8 @@ class PresentationParser {
     _TransformContext? transformContext,
     String? groupShapeId,
     int? fallbackIndex,
+    bool skipPlaceholders = false,
+    bool forceBackgroundDecor = false,
   }) {
     int autoFlowIndex = fallbackIndex ?? 0;
 
@@ -1003,8 +1214,9 @@ class PresentationParser {
               width: rect.width,
               height: rect.height,
               rotation: rot,
-              shapeId: shapeId,
-              groupShapeId: groupShapeId,
+              shapeId: forceBackgroundDecor ? null : shapeId,
+              groupShapeId: forceBackgroundDecor ? null : groupShapeId,
+              isBackgroundDecor: forceBackgroundDecor,
               imageBytes: imgBytes,
             ),
           );
@@ -1018,6 +1230,7 @@ class PresentationParser {
         final ph = child.findAllElements('p:ph').firstOrNull ??
             child.findAllElements('ph').firstOrNull;
         final isPlaceholder = ph != null;
+        if (skipPlaceholders && isPlaceholder) continue;
         final phType = ph?.getAttribute('type') ?? (isPlaceholder ? 'body' : null);
         final phIdx = ph?.getAttribute('idx');
         final phTemplate = isPlaceholder ? layoutTemplate?.lookup(phType, phIdx) : null;
@@ -1200,10 +1413,11 @@ class PresentationParser {
                   : _fallbackRectForIndex(autoFlowIndex++));
           final rot = xfrm?.$2 ?? phTemplate?.rotation ?? 0.0;
 
-          final isBgDecor = !hasText &&
-              ((rect.width * rect.height >= 0.60) ||
-                  (rect.width >= 0.90 && rect.height <= 0.08) ||
-                  (rect.height >= 0.90 && rect.width <= 0.08));
+          final isBgDecor = forceBackgroundDecor ||
+              (!hasText &&
+                  ((rect.width * rect.height >= 0.60) ||
+                      (rect.width >= 0.90 && rect.height <= 0.08) ||
+                      (rect.height >= 0.90 && rect.width <= 0.08)));
 
           elementsOut.add(
             SlideShapeElement(
@@ -1212,8 +1426,8 @@ class PresentationParser {
               width: rect.width,
               height: rect.height,
               rotation: rot,
-              shapeId: shapeId,
-              groupShapeId: groupShapeId,
+              shapeId: forceBackgroundDecor ? null : shapeId,
+              groupShapeId: forceBackgroundDecor ? null : groupShapeId,
               isBackgroundDecor: isBgDecor,
               fillColor: fillColor,
               borderColor: borderColor,
@@ -1352,6 +1566,8 @@ class PresentationParser {
           transformContext: groupContext ?? transformContext,
           groupShapeId: grpId,
           fallbackIndex: autoFlowIndex,
+          skipPlaceholders: skipPlaceholders,
+          forceBackgroundDecor: forceBackgroundDecor,
         );
       }
     }
@@ -1622,17 +1838,18 @@ class PresentationParser {
           final delayFromCond = _extractStartDelayMs(child) ?? inheritedDelay;
           final presetClass = child.getAttribute('presetClass');
 
-          if (presetClass == 'exit') {
-            // Skip exit animations so elements aren't hidden prior to reveal.
-            continue;
-          }
-
-          if (presetClass == 'entr' || presetClass == 'emph') {
-            final isEmphasis = presetClass == 'emph';
+          if (presetClass == 'entr' ||
+              presetClass == 'emph' ||
+              presetClass == 'exit') {
+            final phase = switch (presetClass) {
+              'emph' => SlideAnimationPhase.emphasis,
+              'exit' => SlideAnimationPhase.exit,
+              _ => SlideAnimationPhase.entrance,
+            };
             final presetId = child.getAttribute('presetID');
             final subtype = child.getAttribute('presetSubtype');
 
-            final effect = isEmphasis
+            final effect = phase == SlideAnimationPhase.emphasis
                 ? SlideAnimationEffect.emphasis
                 : _mapPresetIdToEffect(presetId);
             final direction = _mapSubtypeToDirection(subtype);
@@ -1654,7 +1871,7 @@ class PresentationParser {
             }
 
             for (final spid in targetIds) {
-              final dedupKey = '$spid#$clickGroup';
+              final dedupKey = '$spid#$clickGroup#${phase.name}';
               if (!seenPairs.add(dedupKey)) continue;
               steps.add(
                 SlideAnimationStep(
@@ -1665,7 +1882,7 @@ class PresentationParser {
                   durationMs: durMs,
                   delayMs: effectiveDelay,
                   clickGroup: clickGroup,
-                  isEmphasis: isEmphasis,
+                  phase: phase,
                 ),
               );
               currentGroupHasSteps = true;

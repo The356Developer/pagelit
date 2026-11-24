@@ -6,6 +6,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'l10n/app_localizations.dart';
 import 'screens/desktop_shell_screen.dart';
+import 'screens/projector_window_screen.dart';
 import 'screens/splash_screen.dart';
 import 'services/locale_prefs.dart';
 import 'services/onboarding_prefs.dart';
@@ -18,6 +19,13 @@ bool get _isDesktop =>
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Secondary borderless Projector engine fast-path (--projector)
+  if (args.contains('--projector')) {
+    runApp(const ProjectorApp());
+    return;
+  }
+
   await ThemePrefs.load();
   await LocalePrefs.load();
   await OnboardingPrefs.load();
@@ -27,15 +35,20 @@ Future<void> main(List<String> args) async {
     await windowManager.ensureInitialized();
   }
 
-  final initialFile = args.isNotEmpty ? args.first : null;
+  final initialFile = args.isNotEmpty && !args.first.startsWith('--')
+      ? args.first
+      : null;
   runApp(PagelitApp(initialFilePath: initialFile));
 
   if (_isDesktop) {
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      await windowManager.setSize(const Size(1280, 820));
-      await windowManager.setMinimumSize(const Size(860, 560));
-      await windowManager.center();
-      await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+    const windowOptions = WindowOptions(
+      size: Size(1280, 820),
+      minimumSize: Size(860, 560),
+      center: true,
+      titleBarStyle: TitleBarStyle.hidden,
+      title: 'Pagelit',
+    );
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
       await windowManager.show();
       await windowManager.focus();
     });

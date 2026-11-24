@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../l10n/app_localizations.dart';
+import '../services/device_pdfs.dart';
 import '../services/encoding_utils.dart';
 import '../services/excel_parser.dart';
 import '../services/gallery_saver.dart';
@@ -60,6 +61,15 @@ class _ExcelViewerScreenState extends State<ExcelViewerScreen> {
     try {
       final file = File(widget.filePath);
       final bytes = await file.readAsBytes();
+      if (DevicePdfLibrary.isLegacyOleBinary(bytes)) {
+        if (!mounted) return;
+        setState(() {
+          _error =
+              'Legacy Excel 97–2003 (.xls) binary files are not supported directly. Please re-save as .xlsx or PDF.';
+          _isLoading = false;
+        });
+        return;
+      }
       final wb = await ExcelParser.parse(bytes);
       if (!mounted) return;
       setState(() {

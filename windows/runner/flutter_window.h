@@ -6,6 +6,8 @@
 
 #include <memory>
 
+#include "projector/projector_plugin.h"
+#include "vision/vision_plugin.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -28,6 +30,12 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // Native multi-display enumerator and secondary Projector window bridge.
+  std::unique_ptr<ProjectorPlugin> projector_plugin_;
+
+  // Native 2-3m Far-Field Webcam + DirectML ONNX Pose/Hand tracking engine.
+  std::unique_ptr<VisionPlugin> vision_plugin_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
