@@ -14,6 +14,7 @@ import '../theme/app_theme.dart';
 import '../widgets/paper_stack.dart';
 import '../widgets/pdf_glyph.dart';
 import 'excel_viewer_screen.dart';
+import 'phone_remote_screen.dart';
 import 'presentation_viewer_screen.dart';
 import 'reader_screen.dart';
 import 'settings_screen.dart';
@@ -484,6 +485,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 child: Text(l10n.sortSize),
               ),
             ],
+          ),
+          IconButton(
+            tooltip: 'PC Remote Control',
+            icon: const Icon(Icons.phonelink_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const PhoneRemoteScreen(),
+              ),
+            ),
           ),
           IconButton(
             tooltip: l10n.settings,

@@ -10,11 +10,9 @@
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage"/>
-    <!-- Pagelit is fully offline. The file_saver plugin merges INTERNET in;
-         strip it so the release build requests no network access. -->
-    <uses-permission
-        android:name="android.permission.INTERNET"
-        tools:node="remove"/>
+    <!-- Network access for LAN Phone Remote Controller (WebSocket to PC on local Wi-Fi). -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <application
         android:label="Pagelit"
         android:name="${applicationName}"

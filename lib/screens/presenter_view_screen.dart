@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../services/display/display_models.dart';
 import '../services/display/display_service.dart';
@@ -12,6 +13,7 @@ import '../services/hand_tracking/hand_tracking_models.dart';
 import '../services/hand_tracking/hand_tracking_prefs.dart';
 import '../services/hand_tracking/hand_tracking_service.dart';
 import '../services/presentation_parser.dart';
+import '../services/remote/phone_remote_server.dart';
 import '../services/session/document_session_controller.dart';
 import '../services/session/session_models.dart';
 import '../widgets/presentation_stage_canvas.dart';
@@ -111,10 +113,16 @@ class _PresenterViewScreenState extends State<PresenterViewScreen> {
       _session.registerInputSource(ht);
       ht.latestFrame.addListener(_onHandTrackingFrameChanged);
     }
+    if (_isDesktop) {
+      _session.registerInputSource(PhoneRemoteServer.instance);
+    }
     HandTrackingPrefs.showProjectorDot.addListener(_onProjectorDotPrefChanged);
 
     _snapshotSub = _session.snapshots.listen((snap) {
       ProjectorWindowService.instance.syncState(snap);
+      if (_isDesktop) {
+        PhoneRemoteServer.instance.broadcastState(snap);
+      }
       _scrollFilmstripTo(snap.currentIndex);
     });
 
@@ -152,6 +160,10 @@ class _PresenterViewScreenState extends State<PresenterViewScreen> {
     _session.unregisterInputSource(ht);
     if (ht.isRunning.value) {
       ht.stop();
+    }
+    if (_isDesktop) {
+      _session.unregisterInputSource(PhoneRemoteServer.instance);
+      PhoneRemoteServer.instance.stop();
     }
 
     ProjectorWindowService.instance.closeProjector();
@@ -327,6 +339,184 @@ class _PresenterViewScreenState extends State<PresenterViewScreen> {
       return '${hrs.toString().padLeft(2, '0')}:$mm:$ss';
     }
     return '$mm:$ss';
+  }
+
+  Future<void> _openPhoneRemotePairingDialog() async {
+    final server = PhoneRemoteServer.instance;
+    final info = await server.start();
+    server.broadcastState(_session.value);
+    if (!mounted) return;
+
+    if (info == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not start Phone Remote server: ${server.lastError.value ?? 'unknown error'}',
+          ),
+        ),
+      );
+      return;
+    }
+
+    String selectedHost = info.primaryHost;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final qrData = info.pairingUri(selectedHost);
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E2128),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+              ),
+              title: const Row(
+                children: [
+                  Icon(
+                    Icons.phonelink_rounded,
+                    color: Color(0xFF38BDF8),
+                    size: 22,
+                  ),
+                  SizedBox(width: 10),
+                  Text(
+                    'Pair Mobile Remote',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 340,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Open Pagelit on your phone, tap the Remote icon in the top bar, and scan this QR code on the same Wi-Fi.',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12.5,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: QrImageView(
+                        data: qrData,
+                        version: QrVersions.auto,
+                        size: 200,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    if (info.hosts.length > 1)
+                      DropdownButtonFormField<String>(
+                        initialValue: selectedHost,
+                        dropdownColor: const Color(0xFF252932),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Network Adapter IP',
+                          labelStyle: TextStyle(color: Colors.white60),
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          for (final h in info.hosts)
+                            DropdownMenuItem(value: h, child: Text(h)),
+                        ],
+                        onChanged: (val) {
+                          if (val != null) {
+                            setDialogState(() => selectedHost = val);
+                          }
+                        },
+                      ),
+                    const SizedBox(height: 10),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF252932),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: SelectableText(
+                        'IP: $selectedHost   •   Port: ${info.port}   •   PIN: ${info.token}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          fontFeatures: [FontFeature.tabularFigures()],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ValueListenableBuilder<int>(
+                      valueListenable: server.connectedClients,
+                      builder: (_, count, _) {
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.circle,
+                              size: 9,
+                              color: count > 0
+                                  ? const Color(0xFF10B981)
+                                  : Colors.white38,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              count > 0
+                                  ? '$count phone${count == 1 ? '' : 's'} connected'
+                                  : 'Waiting for phone to connect...',
+                              style: TextStyle(
+                                color: count > 0
+                                    ? const Color(0xFF10B981)
+                                    : Colors.white60,
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () async {
+                    await server.stop();
+                    if (ctx.mounted) Navigator.of(ctx).pop();
+                  },
+                  child: const Text(
+                    'Stop Server',
+                    style: TextStyle(color: Color(0xFFF87171)),
+                  ),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Done'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _openHandTrackingSettingsSheet() {
@@ -756,6 +946,37 @@ class _PresenterViewScreenState extends State<PresenterViewScreen> {
                 color: Colors.white70,
               ),
               onPressed: _openHandTrackingSettingsSheet,
+            ),
+            const SizedBox(width: 6),
+          ],
+
+          if (_isDesktop) ...[
+            ValueListenableBuilder<PhoneRemoteServerInfo?>(
+              valueListenable: PhoneRemoteServer.instance.serverInfo,
+              builder: (_, info, _) {
+                return ValueListenableBuilder<int>(
+                  valueListenable: PhoneRemoteServer.instance.connectedClients,
+                  builder: (_, clientCount, _) {
+                    final running = info != null;
+                    final label = clientCount > 0
+                        ? 'Phone ($clientCount)'
+                        : running
+                            ? 'Phone Ready'
+                            : 'Phone Remote';
+                    return _ToolbarChipButton(
+                      icon: clientCount > 0
+                          ? Icons.phonelink_ring_rounded
+                          : Icons.qr_code_2_rounded,
+                      label: label,
+                      active: running,
+                      activeColor: clientCount > 0
+                          ? const Color(0xFF10B981)
+                          : const Color(0xFF3B82F6),
+                      onTap: _openPhoneRemotePairingDialog,
+                    );
+                  },
+                );
+              },
             ),
             const SizedBox(width: 6),
           ],
